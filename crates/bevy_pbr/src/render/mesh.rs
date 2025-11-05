@@ -153,16 +153,16 @@ impl Plugin for MeshRenderPlugin {
         app.add_systems(
             PostUpdate,
             (no_automatic_skin_batching, no_automatic_morph_batching),
-        )
-        .add_plugins((
-            BinnedRenderPhasePlugin::<Opaque3d, MeshPipeline>::new(self.debug_flags),
-            BinnedRenderPhasePlugin::<AlphaMask3d, MeshPipeline>::new(self.debug_flags),
-            BinnedRenderPhasePlugin::<Shadow, MeshPipeline>::new(self.debug_flags),
-            BinnedRenderPhasePlugin::<Opaque3dDeferred, MeshPipeline>::new(self.debug_flags),
-            BinnedRenderPhasePlugin::<AlphaMask3dDeferred, MeshPipeline>::new(self.debug_flags),
-            SortedRenderPhasePlugin::<Transmissive3d, MeshPipeline>::new(self.debug_flags),
-            SortedRenderPhasePlugin::<Transparent3d, MeshPipeline>::new(self.debug_flags),
-        ));
+        );
+        // .add_plugins((
+        //     BinnedRenderPhasePlugin::<Opaque3d, MeshPipeline>::new(self.debug_flags),
+        //     BinnedRenderPhasePlugin::<AlphaMask3d, MeshPipeline>::new(self.debug_flags),
+        //     BinnedRenderPhasePlugin::<Shadow, MeshPipeline>::new(self.debug_flags),
+        //     BinnedRenderPhasePlugin::<Opaque3dDeferred, MeshPipeline>::new(self.debug_flags),
+        //     BinnedRenderPhasePlugin::<AlphaMask3dDeferred, MeshPipeline>::new(self.debug_flags),
+        //     SortedRenderPhasePlugin::<Transmissive3d, MeshPipeline>::new(self.debug_flags),
+        //     SortedRenderPhasePlugin::<Transparent3d, MeshPipeline>::new(self.debug_flags),
+        // ));
 
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
@@ -208,14 +208,8 @@ impl Plugin for MeshRenderPlugin {
 
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
-                .init_resource::<ViewKeyCache>()
-                .init_resource::<ViewSpecializationTicks>()
                 .init_resource::<GpuPreprocessingSupport>()
-                .init_resource::<SkinUniforms>()
-                .add_systems(
-                    Render,
-                    check_views_need_specialization.in_set(PrepareAssets),
-                );
+                .init_resource::<SkinUniforms>();
 
             let gpu_preprocessing_support =
                 render_app.world().resource::<GpuPreprocessingSupport>();
@@ -291,141 +285,6 @@ impl Plugin for MeshRenderPlugin {
             ShaderSettings {
                 shader_defs: mesh_bindings_shader_defs.clone(),
             });
-    }
-}
-
-#[derive(Resource, Deref, DerefMut, Default, Debug, Clone)]
-pub struct ViewKeyCache(HashMap<RetainedViewEntity, MeshPipelineKey>);
-
-#[derive(Resource, Deref, DerefMut, Default, Debug, Clone)]
-pub struct ViewSpecializationTicks(HashMap<RetainedViewEntity, Tick>);
-
-pub fn check_views_need_specialization(
-    mut view_key_cache: ResMut<ViewKeyCache>,
-    mut view_specialization_ticks: ResMut<ViewSpecializationTicks>,
-    mut views: Query<(
-        &ExtractedView,
-        &Msaa,
-        Option<&Tonemapping>,
-        Option<&DebandDither>,
-        Option<&ShadowFilteringMethod>,
-        Has<ScreenSpaceAmbientOcclusion>,
-        (
-            Has<NormalPrepass>,
-            Has<DepthPrepass>,
-            Has<MotionVectorPrepass>,
-            Has<DeferredPrepass>,
-        ),
-        Option<&Camera3d>,
-        Has<TemporalJitter>,
-        Option<&Projection>,
-        Has<DistanceFog>,
-        (
-            Has<RenderViewLightProbes<EnvironmentMapLight>>,
-            Has<RenderViewLightProbes<IrradianceVolume>>,
-        ),
-        Has<OrderIndependentTransparencySettings>,
-    )>,
-    ticks: SystemChangeTick,
-) {
-    for (
-        view,
-        msaa,
-        tonemapping,
-        dither,
-        shadow_filter_method,
-        ssao,
-        (normal_prepass, depth_prepass, motion_vector_prepass, deferred_prepass),
-        camera_3d,
-        temporal_jitter,
-        projection,
-        distance_fog,
-        (has_environment_maps, has_irradiance_volumes),
-        has_oit,
-    ) in views.iter_mut()
-    {
-        let mut view_key = MeshPipelineKey::from_msaa_samples(msaa.samples())
-            | MeshPipelineKey::from_hdr(view.hdr);
-
-        if normal_prepass {
-            view_key |= MeshPipelineKey::NORMAL_PREPASS;
-        }
-
-        if depth_prepass {
-            view_key |= MeshPipelineKey::DEPTH_PREPASS;
-        }
-
-        if motion_vector_prepass {
-            view_key |= MeshPipelineKey::MOTION_VECTOR_PREPASS;
-        }
-
-        if deferred_prepass {
-            view_key |= MeshPipelineKey::DEFERRED_PREPASS;
-        }
-
-        if temporal_jitter {
-            view_key |= MeshPipelineKey::TEMPORAL_JITTER;
-        }
-
-        if has_environment_maps {
-            view_key |= MeshPipelineKey::ENVIRONMENT_MAP;
-        }
-
-        if has_irradiance_volumes {
-            view_key |= MeshPipelineKey::IRRADIANCE_VOLUME;
-        }
-
-        if has_oit {
-            view_key |= MeshPipelineKey::OIT_ENABLED;
-        }
-
-        if let Some(projection) = projection {
-            view_key |= match projection {
-                Projection::Perspective(_) => MeshPipelineKey::VIEW_PROJECTION_PERSPECTIVE,
-                Projection::Orthographic(_) => MeshPipelineKey::VIEW_PROJECTION_ORTHOGRAPHIC,
-                Projection::Custom(_) => MeshPipelineKey::VIEW_PROJECTION_NONSTANDARD,
-            };
-        }
-
-        match shadow_filter_method.unwrap_or(&ShadowFilteringMethod::default()) {
-            ShadowFilteringMethod::Hardware2x2 => {
-                view_key |= MeshPipelineKey::SHADOW_FILTER_METHOD_HARDWARE_2X2;
-            }
-            ShadowFilteringMethod::Gaussian => {
-                view_key |= MeshPipelineKey::SHADOW_FILTER_METHOD_GAUSSIAN;
-            }
-            ShadowFilteringMethod::Temporal => {
-                view_key |= MeshPipelineKey::SHADOW_FILTER_METHOD_TEMPORAL;
-            }
-        }
-
-        if !view.hdr {
-            if let Some(tonemapping) = tonemapping {
-                view_key |= MeshPipelineKey::TONEMAP_IN_SHADER;
-                view_key |= tonemapping_pipeline_key(*tonemapping);
-            }
-            if let Some(DebandDither::Enabled) = dither {
-                view_key |= MeshPipelineKey::DEBAND_DITHER;
-            }
-        }
-        if ssao {
-            view_key |= MeshPipelineKey::SCREEN_SPACE_AMBIENT_OCCLUSION;
-        }
-        if distance_fog {
-            view_key |= MeshPipelineKey::DISTANCE_FOG;
-        }
-        if let Some(camera_3d) = camera_3d {
-            view_key |= screen_space_specular_transmission_pipeline_key(
-                camera_3d.screen_space_specular_transmission_quality,
-            );
-        }
-        if !view_key_cache
-            .get_mut(&view.retained_view_entity)
-            .is_some_and(|current_key| *current_key == view_key)
-        {
-            view_key_cache.insert(view.retained_view_entity, view_key);
-            view_specialization_ticks.insert(view.retained_view_entity, ticks.this_run());
-        }
     }
 }
 
