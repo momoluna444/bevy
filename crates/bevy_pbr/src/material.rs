@@ -340,8 +340,6 @@ where
         };
 
         render_app
-            // NOTE: Most PhaseItems are already initialized by Core3dPlugin.
-            // Reinitialize them won't do anything.
             .init_resource::<DrawFunctions<PIE>>()
             .add_render_command::<PIE, P::RenderCommand>()
             .add_systems(
@@ -449,6 +447,9 @@ impl_to_phase_plugins!(T0, T1, T2, T3);
 //     }
 // }
 
+#[derive(Resource, Default)]
+struct PassPluginLoaded;
+
 #[derive(Default)]
 pub struct PassPlugin<P> {
     pub debug_flags: RenderDebugFlags,
@@ -468,7 +469,7 @@ impl<P: Pass> Plugin for PassPlugin<P> {
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
-
+        // For all instances of PassPlugin
         render_app
             .init_resource::<EntitySpecializationTicks>()
             .init_resource::<SpecializedMaterialPipelineCache<P>>()
@@ -483,18 +484,26 @@ impl<P: Pass> Plugin for PassPlugin<P> {
                 late_sweep_entities_needing_specialization::<P>
                     .after(MaterialEarlySweepEntitiesNeedingSpecializationSystems)
                     .before(late_sweep_material_instances),
-            )
-            .add_systems(
-                Render,
-                (
-                    prepare_material_bind_groups, // TODO: Those two systems should be singleton.
-                    write_material_bind_group_buffers,
-                )
-                    .chain()
-                    .in_set(RenderSystems::PrepareBindGroups),
             );
+
+        // Singleton systems start
+        if render_app.world().contains_resource::<PassPluginLoaded>() {
+            return;
+        }
+        render_app.init_resource::<PassPluginLoaded>().add_systems(
+            Render,
+            (
+                prepare_material_bind_groups,
+                write_material_bind_group_buffers,
+            )
+                .chain()
+                .in_set(RenderSystems::PrepareBindGroups),
+        );
     }
 }
+
+#[derive(Resource, Default)]
+struct MaterialPluginLoaded;
 
 /// Adds the necessary ECS resources and render logic to enable rendering entities using the given [`Material`]
 /// asset type.
@@ -539,30 +548,41 @@ where
             );
         }
 
-        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app
-                .add_systems(RenderStartup, add_material_bind_group_allocator::<M>)
-                .add_systems(
-                    ExtractSchedule,
-                    (
-                        extract_mesh_materials::<M>.in_set(MaterialExtractionSystems),
-                        early_sweep_material_instances::<M>
-                            .after(MaterialExtractionSystems)
-                            .before(late_sweep_material_instances),
-                        // See the comments in
-                        // `early_sweep_entities_needing_specialization` for an
-                        // explanation of why the systems are ordered this way.
-                        extract_entities_needs_specialization::<M>
-                            .in_set(MaterialExtractEntitiesNeedingSpecializationSystems),
-                        early_sweep_entities_needing_specialization::<M>
-                            .in_set(MaterialEarlySweepEntitiesNeedingSpecializationSystems)
-                            .after(MaterialExtractEntitiesNeedingSpecializationSystems)
-                            .after(MaterialExtractionSystems)
-                            .after(extract_cameras)
-                            .before(late_sweep_material_instances),
-                    ),
-                );
+        let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
+            return;
+        };
+        render_app
+            .add_systems(RenderStartup, add_material_bind_group_allocator::<M>)
+            .add_systems(
+                ExtractSchedule,
+                (
+                    extract_mesh_materials::<M>.in_set(MaterialExtractionSystems),
+                    early_sweep_material_instances::<M>
+                        .after(MaterialExtractionSystems)
+                        .before(late_sweep_material_instances),
+                    // See the comments in
+                    // `early_sweep_entities_needing_specialization` for an
+                    // explanation of why the systems are ordered this way.
+                    extract_entities_needs_specialization::<M>
+                        .in_set(MaterialExtractEntitiesNeedingSpecializationSystems),
+                    early_sweep_entities_needing_specialization::<M>
+                        .in_set(MaterialEarlySweepEntitiesNeedingSpecializationSystems)
+                        .after(MaterialExtractEntitiesNeedingSpecializationSystems)
+                        .after(MaterialExtractionSystems)
+                        .after(extract_cameras)
+                        .before(late_sweep_material_instances),
+                ),
+            );
+
+        if render_app
+            .world()
+            .contains_resource::<MaterialPluginLoaded>()
+        {
+            return;
         }
+        render_app
+            .init_resource::<MaterialPluginLoaded>()
+            .add_systems(ExtractSchedule, (late_sweep_material_instances,));
     }
 }
 
