@@ -429,7 +429,7 @@ impl ShaderImport {
 }
 
 /// A reference to a shader asset.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub enum ShaderRef {
     /// Use the "default" shader for the current context.
     #[default]

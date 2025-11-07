@@ -22,16 +22,11 @@ use bevy_ecs::{
 use bevy_light::{EnvironmentMapLight, IrradianceVolume, ShadowFilteringMethod};
 use bevy_mesh::{BaseMeshPipelineKey, MeshVertexBufferLayoutRef};
 use bevy_render::{
-    camera::TemporalJitter,
-    render_phase::{
-        BinnedRenderPhase, BinnedRenderPhasePlugin, BinnedRenderPhaseType, PhaseItemExtraIndex,
-        SortedRenderPhase, SortedRenderPhasePlugin, ViewBinnedRenderPhases, ViewSortedRenderPhases,
-    },
-    render_resource::{
+    Render, RenderApp, RenderDebugFlags, RenderSystems, camera::TemporalJitter, render_phase::{
+        BinnedRenderPhase, BinnedRenderPhasePlugin, BinnedRenderPhaseType, PhaseItemExtraIndex, SortedRenderPhase, SortedRenderPhasePlugin, ViewBinnedRenderPhases, ViewSortedRenderPhases
+    }, render_resource::{
         RenderPipelineDescriptor, SpecializedMeshPipeline, SpecializedMeshPipelineError,
-    },
-    view::{ExtractedView, Msaa},
-    Render, RenderApp, RenderDebugFlags, RenderSystems,
+    }, view::{ExtractedView, Msaa}
 };
 use bevy_shader::ShaderDefVal;
 
@@ -39,7 +34,7 @@ use crate::{
     alpha_mode_pipeline_key, screen_space_specular_transmission_pipeline_key,
     tonemapping_pipeline_key, DistanceFog, DrawMaterial, ErasedMaterialPipelineKey,
     MaterialFragmentShader, MaterialPipeline, MaterialProperties, MaterialVertexShader,
-    MeshPipeline, MeshPipelineKey, OpaqueRendererMethod, Pass, PassId, PassPlugin, PhaseItemEx,
+    MeshPipeline, MeshPipelineKey, OpaqueRendererMethod, Pass, PassId, PassPlugin, PhaseItemExt,
     PhaseParams, PipelineSpecializer, PreparedMaterial, RenderLightmap, RenderMeshInstanceFlags,
     RenderViewLightProbes, ScreenSpaceAmbientOcclusion, ViewKeyCache, ViewSpecializationTicks,
     MATERIAL_BIND_GROUP_INDEX,
@@ -49,10 +44,9 @@ use crate::{
 pub struct MainPassPlugin {
     pub debug_flags: RenderDebugFlags,
 }
-// use bevy_ecs::schedule::IntoScheduleConfigs;
 impl Plugin for MainPassPlugin {
     fn build(&self, app: &mut bevy_app::App) {
-        app.add_plugins(PassPlugin::<MainPass>::default());
+        app.add_plugins(PassPlugin::<MainPass>::new(self.debug_flags));
 
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app.add_systems(
@@ -316,7 +310,7 @@ impl SpecializedMeshPipeline for MaterialPipelineSpecializer {
             .insert(3, self.properties.material_layout.as_ref().unwrap().clone());
 
         if let Some(specialize) = self.properties.specialize {
-            specialize(&self.pipeline, &mut descriptor, layout, key)?; // Maybe we can pass the pass_id to users?
+            specialize(&self.pipeline, &mut descriptor, layout, key, self.pass_id)?;
         }
 
         // If bindless mode is on, add a `BINDLESS` define.
@@ -331,7 +325,7 @@ impl SpecializedMeshPipeline for MaterialPipelineSpecializer {
     }
 }
 
-impl PhaseItemEx for Opaque3d {
+impl PhaseItemExt for Opaque3d {
     type Phase = BinnedRenderPhase<Self>;
     type Phases = ViewBinnedRenderPhases<Self>;
     type Plugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
@@ -376,7 +370,7 @@ impl PhaseItemEx for Opaque3d {
     }
 }
 
-impl PhaseItemEx for AlphaMask3d {
+impl PhaseItemExt for AlphaMask3d {
     type Phase = BinnedRenderPhase<Self>;
     type Phases = ViewBinnedRenderPhases<Self>;
     type Plugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
@@ -408,7 +402,7 @@ impl PhaseItemEx for AlphaMask3d {
     }
 }
 
-impl PhaseItemEx for Transmissive3d {
+impl PhaseItemExt for Transmissive3d {
     type Phase = SortedRenderPhase<Self>;
     type Phases = ViewSortedRenderPhases<Self>;
     type Plugin = SortedRenderPhasePlugin<Self, MeshPipeline>;
@@ -434,7 +428,7 @@ impl PhaseItemEx for Transmissive3d {
     }
 }
 
-impl PhaseItemEx for Transparent3d {
+impl PhaseItemExt for Transparent3d {
     type Phase = SortedRenderPhase<Self>;
     type Phases = ViewSortedRenderPhases<Self>;
     type Plugin = SortedRenderPhasePlugin<Self, MeshPipeline>;

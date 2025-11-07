@@ -328,7 +328,6 @@ impl Plugin for PbrPlugin {
                     extract_ambient_light_resource,
                     extract_ambient_light,
                     extract_shadow_filtering_method,
-                    late_sweep_material_instances,
                 ),
             )
             .add_systems(
