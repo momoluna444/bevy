@@ -25,7 +25,7 @@ use bevy_mesh::{
 };
 use bevy_platform::collections::hash_map::Entry;
 use bevy_platform::collections::{HashMap, HashSet};
-use bevy_platform::hash::FixedHasher;
+use bevy_platform::hash::{FixedHasher, NoOpHash};
 use bevy_reflect::std_traits::ReflectDefault;
 use bevy_reflect::Reflect;
 use bevy_render::batching::GetFullBatchData;
@@ -51,10 +51,11 @@ use bevy_render::{
 use bevy_render::{mesh::allocator::MeshAllocator, sync_world::MainEntityHashMap};
 use bevy_render::{texture::FallbackImage, view::RenderVisibleEntities};
 use bevy_shader::Shader;
-use bevy_utils::Parallel;
+use bevy_utils::{Parallel, TypeIdMap};
 use core::any::{Any, TypeId};
 use core::hash::{BuildHasher, Hasher};
 use core::{hash::Hash, marker::PhantomData};
+use derive_more::From;
 use smallvec::SmallVec;
 use tracing::error;
 
@@ -134,7 +135,9 @@ pub trait Material: Asset + AsBindGroup + Clone + Sized {
     // NOTE: We can use this as an overlay before finishing migrations.
     /// Returns this material's shaders for all passes.
     fn shaders() -> PassShaders {
-        PassShaders::default() // TODO: redesign
+        let mut pass_shaders = PassShaders::default();
+        pass_shaders.insert(MainPass::id(), ShaderSet::default());
+        pass_shaders
     }
 
     /// Returns this material's vertex shader. If [`ShaderRef::Default`] is returned, the default mesh vertex shader
@@ -285,23 +288,26 @@ pub struct ShaderSet {
 /// A collection of [`ShaderSet`]s organized by [`PassId`].
 ///
 /// This holds all the shaders of a [`Material`].
-#[derive(Deref, DerefMut)]
-pub struct PassShaders {
-    #[deref]
-    map: HashMap<PassId, ShaderSet>,
-}
+// #[derive(Deref, DerefMut, From, derive_more::IntoIterator)]
+// pub struct PassShaders {
+//     #[deref]
+//     map: HashMap<PassId, ShaderSet>,
+// }
 
-impl Default for PassShaders {
-    fn default() -> Self {
-        Self {
-            map: HashMap::<PassId, ShaderSet>::from([
-                (MainPass::pass_id(), ShaderSet::default()),
-                (MainPass::pass_id(), ShaderSet::default()), // TODO: Replace this
-                (MainPass::pass_id(), ShaderSet::default()),
-            ]),
-        }
-    }
-}
+type PassShaders = HashMap<PassId, ShaderSet, NoOpHash>;
+// type PassShaders = TypeIdMap<PassId, ShaderSet, NoOpHash>;
+
+// impl Default for PassShaders {
+//     fn default() -> Self {
+//         Self {
+//             map: HashMap::<PassId, ShaderSet>::from([
+//                 (MainPass::id(), ShaderSet::default()),
+//                 (MainPass::id(), ShaderSet::default()), // TODO: Replace this
+//                 (MainPass::id(), ShaderSet::default()),
+//             ]),
+//         }
+//     }
+// }
 
 /// A unique identifier for a [`Pass`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deref)]
@@ -311,13 +317,6 @@ impl PassId {
     /// Creates a new [`PassId`] from a [`Pass`].
     pub fn of<P: Pass>() -> Self {
         PassId(TypeId::of::<P>())
-    }
-
-    /// Creates a new [`PassId`] from a [`TypeId`].
-    ///
-    /// This is useful when you don't want to use the [`Pass`] trait.
-    pub fn from_type_id(type_id: TypeId) -> Self {
-        PassId(type_id)
     }
 }
 
@@ -330,9 +329,12 @@ where
 
     type PhaseItems: ToPhasePlugins<Self>;
 
-    type RenderCommand: Send + Sync; // TODO: Move this to PhaseItem
+    // NOTE: Theoretically, the relationship between PhaseItem and RenderCommand
+    // is many-to-many, but I haven't seen many use cases of this. For simplicity
+    // of implementation, I’m keeping it this way for now.
+    type RenderCommand: Send + Sync;
 
-    fn pass_id() -> PassId {
+    fn id() -> PassId {
         PassId::of::<Self>()
     }
 }
@@ -412,9 +414,15 @@ impl<P: Pass> PassPlugin<P> {
     }
 }
 
+// TODO:
+// - Preprocess visible entities for per-phase specialization
+// - Find a way to handle PhaseType dynamicly
+// - Don't forget Drawfunctions<T>
+// - Making a generic render graph node
+
 impl<P: Pass> Plugin for PassPlugin<P> {
     fn build(&self, app: &mut App) {
-        // This is equivalent to: app.add_plugins((PassPhasePlugin::<P, Opaque3d>::new(), ...));
+        // This is equivalent to: app.add_plugins((PassPhasePlugin::<Pass, Opaque3d>::new(), ...));
         P::PhaseItems::add_plugins(app, self.debug_flags);
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
@@ -462,12 +470,12 @@ impl<P, PI> PassPhasePlugin<P, PI> {
 impl<P, PIE> Plugin for PassPhasePlugin<P, PIE>
 where
     P: Pass,
-    PIE: PhaseItemExt + Default,
+    PIE: PhaseItemExt,
     P::RenderCommand: RenderCommand<PIE>,
     <P::RenderCommand as RenderCommand<PIE>>::Param: ReadOnlySystemParam,
 {
     fn build(&self, app: &mut App) {
-        // NOTE: The `PIE::Phases` resource is indirectly initialized `by PIE::Plugin`.
+        // NOTE: The resource `PIE::Phases` is indirectly initialized `by PIE::Plugin`.
         app.add_plugins(PIE::Plugin::new(self.debug_flags));
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
@@ -509,7 +517,7 @@ where
     P: Pass,
     P::RenderCommand: RenderCommand<T0>,
     <P::RenderCommand as RenderCommand<T0>>::Param: ReadOnlySystemParam,
-    T0: PhaseItemExt + Default,
+    T0: PhaseItemExt,
 {
     fn add_plugins(app: &mut App, debug_flags: RenderDebugFlags) {
         app.add_plugins(PassPhasePlugin::<P, T0>::new(debug_flags));
@@ -524,7 +532,7 @@ macro_rules! impl_to_phase_plugins {
             P: Pass,
             $(P::RenderCommand: RenderCommand<$T>,)+
             $(<P::RenderCommand as RenderCommand<$T>>::Param: ReadOnlySystemParam,)+
-            $($T: PhaseItemExt + Default),+
+            $($T: PhaseItemExt),+
         {
             fn add_plugins(app: &mut App, debug_flags: RenderDebugFlags) {
                 app.add_plugins((
@@ -1062,7 +1070,7 @@ pub fn late_sweep_entities_needing_specialization<P: Pass, PIE: PhaseItemExt>(
     mut entities_needing_sweep: ResMut<EntitiesNeedingSweep>,
     mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P, PIE>>,
 ) {
-    let Some(entities) = entities_needing_sweep.get_mut(&P::pass_id()) else {
+    let Some(entities) = entities_needing_sweep.get_mut(&P::id()) else {
         return;
     };
     for view in views {
@@ -1147,16 +1155,22 @@ pub struct EntitySpecializationTickPair {
     pub material_instances_tick: Tick,
 }
 
-/// Stores the [`SpecializedMaterialViewPipelineCache`] for each view's pass.
-#[derive(Resource, Deref, DerefMut, Default)]
+/// Stores the [`SpecializedMaterialViewPipelineCache`] for each view.
+#[derive(Resource, Deref, DerefMut)]
 pub struct SpecializedMaterialPipelineCache<P, PIE> {
-    // NOTE: We cannot use the form HashMap<(RetainedViewEntity, PassId), _>
-    // because multiple systems are simultaneously writing to this resource,
-    // which would compromise parallelism.
     // view entity -> view pipeline cache
     #[deref]
     map: HashMap<RetainedViewEntity, SpecializedMaterialViewPipelineCache>,
     _marker: PhantomData<(P, PIE)>,
+}
+
+impl<P, PIE> Default for SpecializedMaterialPipelineCache<P, PIE> {
+    fn default() -> Self {
+        Self {
+            map: Default::default(),
+            _marker: PhantomData,
+        }
+    }
 }
 
 /// Stores the cached render pipeline ID for each entity in a single view, as
@@ -1200,7 +1214,6 @@ pub trait PipelineSpecializer: SpecializedMeshPipeline {
 
     fn new(pipeline: &Self::Pipeline, material: &PreparedMaterial, pass_id: PassId) -> Self;
 
-    // NOTE: For MSAA, we could use &Msaa::from_samples(view_key.msaa_samples())
     fn create_key(
         view_key: MeshPipelineKey,
         base_mesh_key: &BaseMeshPipelineKey,
@@ -1319,8 +1332,7 @@ pub fn specialize_material_meshes<P: Pass, PIE: PhaseItemExt>(
                 continue;
             };
 
-            let material_pipeline_specializer =
-                P::Specializer::new(&pipeline, material, P::pass_id());
+            let material_pipeline_specializer = P::Specializer::new(&pipeline, material, P::id());
 
             let pipeline_id = pipelines.specialize(
                 &pipeline_cache,
@@ -1383,10 +1395,26 @@ pub struct PhaseParams<'a> {
     pub rangefinder: &'a ViewRangefinder3d,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deref)]
+pub struct PhaseItemId(TypeId);
+
+impl PhaseItemId {
+    pub fn of<PI: PhaseItem>() -> Self {
+        PhaseItemId(TypeId::of::<PI>())
+    }
+}
+
 pub trait PhaseItemExt: PhaseItem {
     type Phase: RenderPhase;
     type Phases: ViewRenderPhases + Resource;
     type Plugin: RenderPhasePlugin + Plugin;
+
+    fn id() -> PhaseItemId {
+        PhaseItemId::of::<Self>()
+    }
+
+    // TODO: add enable_shadow, enable_prepass
+    fn try_match(alpha_mode: AlphaMode, use_transmission: bool) -> Option<PhaseItemId>;
 
     fn queue(render_phase: &mut Self::Phase, params: &PhaseParams);
 }
@@ -1532,10 +1560,7 @@ pub fn queue_material_meshes<P: Pass, PIE: PhaseItemExt>(
                 continue;
             };
 
-            let Some(draw_function) = material
-                .properties
-                .get_draw_function(MaterialDrawFunction(P::pass_id()))
-            else {
+            let Some(draw_function) = material.properties.get_draw_function(P::id()) else {
                 continue;
             };
 
@@ -1746,13 +1771,14 @@ pub struct MaterialProperties {
     /// This allows taking color output from the [`Opaque3d`] pass as an input, (for screen-space transmission) but requires
     /// rendering to take place in a separate [`Transmissive3d`] pass.
     pub reads_view_transmission_texture: bool,
-    pub render_phase_type: RenderPhaseType, // TODO: need design
     pub material_layout: Option<BindGroupLayoutDescriptor>,
+    /// Backing array is a size of 4 because the `StandardMaterial` needs 4 render phases by default
+    pub phase_items: SmallVec<[(PassId, PhaseItemId); 4]>, // TODO: need design
     /// Backing array is a size of 4 because the `StandardMaterial` needs 4 draw functions by default
-    pub draw_functions: SmallVec<[(InternedDrawFunctionLabel, DrawFunctionId); 4]>,
+    pub draw_functions: SmallVec<[(PassId, DrawFunctionId); 4]>,
     /// Backing array is a size of 3 because the `StandardMaterial` has 3 custom shaders (`frag`, `prepass_frag`, `deferred_frag`) which is the
     /// most common use case
-    pub shaders: SmallVec<[(InternedShaderLabel, Handle<Shader>); 3]>,
+    pub shaders: SmallVec<[(PassId, Handle<Shader>); 3]>,
     /// Whether this material *actually* uses bindless resources, taking the
     /// platform support (or lack thereof) of bindless resources into account.
     pub bindless: bool,
@@ -1775,43 +1801,51 @@ pub struct MaterialProperties {
 }
 
 impl MaterialProperties {
-    pub fn get_shader(&self, label: impl ShaderLabel) -> Option<Handle<Shader>> {
+    pub fn get_shader(&self, pass_id: PassId) -> Option<Handle<Shader>> {
         self.shaders
             .iter()
-            .find(|(inner_label, _)| inner_label == &label.intern())
+            .find(|(id, _)| *id == pass_id)
             .map(|(_, shader)| shader)
             .cloned()
     }
 
-    pub fn add_shader(&mut self, label: impl ShaderLabel, shader: Handle<Shader>) {
-        self.shaders.push((label.intern(), shader));
+    pub fn add_shader(&mut self, pass_id: PassId, shader: Handle<Shader>) {
+        self.shaders.push((pass_id, shader));
     }
 
-    pub fn get_draw_function(&self, label: impl DrawFunctionLabel) -> Option<DrawFunctionId> {
+    pub fn get_draw_function(&self, pass_id: PassId) -> Option<DrawFunctionId> {
         self.draw_functions
             .iter()
-            .find(|(inner_label, _)| inner_label == &label.intern())
+            .find(|(id, _)| *id == pass_id)
             .map(|(_, shader)| shader)
             .cloned()
     }
 
-    pub fn add_draw_function(
-        &mut self,
-        label: impl DrawFunctionLabel,
-        draw_function: DrawFunctionId,
-    ) {
-        self.draw_functions.push((label.intern(), draw_function));
+    pub fn add_draw_function(&mut self, pass_id: PassId, draw_function: DrawFunctionId) {
+        self.draw_functions.push((pass_id, draw_function));
+    }
+
+    pub fn get_phase_item(&self, pass_id: PassId) -> Option<PhaseItemId> {
+        self.phase_items
+            .iter()
+            .find(|(id, _)| *id == pass_id)
+            .map(|(_, shader)| shader)
+            .cloned()
+    }
+
+    pub fn add_phase_item(&mut self, pass_id: PassId, phase_item: PhaseItemId) {
+        self.phase_items.push((pass_id, phase_item));
     }
 }
 
-#[derive(Clone, Copy, Default)]
-pub enum RenderPhaseType {
-    #[default]
-    Opaque,
-    AlphaMask,
-    Transmissive,
-    Transparent,
-}
+// #[derive(Clone, Copy, Default)]
+// pub enum RenderPhaseType {
+//     #[default]
+//     Opaque,
+//     AlphaMask,
+//     Transmissive,
+//     Transparent,
+// }
 
 /// A resource that maps each untyped material ID to its binding.
 ///
@@ -1827,10 +1861,26 @@ pub struct PreparedMaterial {
     pub properties: Arc<MaterialProperties>,
 }
 
-// TODO: Redesign this
+#[derive(Copy, Clone)]
+struct PhaseMatcherContext {
+    alpha_mode: AlphaMode,
+    is_transparent: bool,
+}
+
+type PhaseMatcher = fn(PhaseMatcherContext) -> bool;
+
 // NOTE: Users should manually prepare this resource
 #[derive(Resource, Deref, DerefMut)]
-pub struct PassDrawFunctions(HashMap<PassId, DrawFunctionId>);
+pub struct PhaseMatchers(
+    HashMap<
+        PassId,
+        SmallVec<[(PhaseMatcher, PhaseItemId, DrawFunctionId); 4]>, // add MAX_PHASES
+        NoOpHash,
+    >,
+);
+
+#[derive(Resource, Deref, DerefMut)]
+pub struct PassPhases(HashMap<PassId, Vec<PhaseItemId>>);
 
 // orphan rules T_T
 impl<M: Material> ErasedRenderAsset for MeshMaterial3d<M>
@@ -1855,7 +1905,8 @@ where
         // SRes<DrawFunctions<Opaque3dDeferred>>,
         // SRes<DrawFunctions<AlphaMask3dDeferred>>,
         // SRes<DrawFunctions<Shadow>>,
-        SRes<PassDrawFunctions>,
+        SRes<PhaseMatchers>,
+        // SRes<PassPhases>,
         SRes<AssetServer>,
         M::Param,
     );
@@ -1878,7 +1929,8 @@ where
             // opaque_deferred_draw_functions,
             // alpha_mask_deferred_draw_functions,
             // shadow_draw_functions,
-            pass_draw_functions,
+            phase_matcher,
+            // pass_phases,
             asset_server,
             material_param,
         ): &mut SystemParamItem<Self::Param>,
@@ -1918,14 +1970,17 @@ where
             mesh_pipeline_key_bits.contains(MeshPipelineKey::READS_VIEW_TRANSMISSION_TEXTURE);
 
         // TODO: Redesign this
-        let render_phase_type = match material.alpha_mode() {
-            AlphaMode::Blend | AlphaMode::Premultiplied | AlphaMode::Add | AlphaMode::Multiply => {
-                RenderPhaseType::Transparent
-            }
-            _ if reads_view_transmission_texture => RenderPhaseType::Transmissive,
-            AlphaMode::Opaque | AlphaMode::AlphaToCoverage => RenderPhaseType::Opaque,
-            AlphaMode::Mask(_) => RenderPhaseType::AlphaMask,
-        };
+        // let render_phase_type = match material.alpha_mode() {
+        //     AlphaMode::Blend | AlphaMode::Premultiplied | AlphaMode::Add | AlphaMode::Multiply => {
+        //         RenderPhaseType::Transparent
+        //     }
+        //     _ if reads_view_transmission_texture => RenderPhaseType::Transmissive,
+        //     AlphaMode::Opaque | AlphaMode::AlphaToCoverage => RenderPhaseType::Opaque,
+        //     AlphaMode::Mask(_) => RenderPhaseType::AlphaMask,
+        // };
+
+        let phase_items = SmallVec::new();
+        // phase_matcher.
 
         // let draw_function_id = match render_phase_type {
         //     RenderPhaseType::Opaque => draw_opaque_pbr,
@@ -1957,14 +2012,14 @@ where
         // }
 
         let mut shaders = SmallVec::new();
-        let mut add_shader = |label: InternedShaderLabel, shader_ref: ShaderRef| {
+        let mut add_shader = |pass_id: PassId, shader_ref: ShaderRef| {
             let mayber_shader = match shader_ref {
                 ShaderRef::Default => None,
                 ShaderRef::Handle(handle) => Some(handle),
                 ShaderRef::Path(path) => Some(asset_server.load(path)),
             };
             if let Some(shader) = mayber_shader {
-                shaders.push((label, shader));
+                shaders.push((pass_id, shader));
             }
         };
         // add_shader(MaterialVertexShader.intern(), M::vertex_shader());
@@ -1978,14 +2033,15 @@ where
         // );
 
         M::shaders()
-            .map
             .into_iter()
             .for_each(|(pass_id, ShaderSet { vertex, fragment })| {
-                add_shader(MaterialVertexShader(pass_id).intern(), vertex);
-                add_shader(MaterialFragmentShader(pass_id).intern(), fragment);
-                if let Some(draw) = pass_draw_functions.get(&pass_id) {
-                    draw_functions.push((MaterialDrawFunction(pass_id).intern(), *draw))
-                };
+                add_shader(pass_id, vertex);
+                add_shader(pass_id, fragment);
+                phase_matcher.get(pass_id)
+                // TODO
+                // if let Some(draw) = pass_draw_functions.get(&pass_id) {
+                //     draw_functions.push((MaterialDrawFunction(pass_id).intern(), *draw))
+                // };
             });
 
         #[cfg(feature = "meshlet")]
