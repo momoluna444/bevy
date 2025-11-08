@@ -51,11 +51,10 @@ use bevy_render::{
 use bevy_render::{mesh::allocator::MeshAllocator, sync_world::MainEntityHashMap};
 use bevy_render::{texture::FallbackImage, view::RenderVisibleEntities};
 use bevy_shader::Shader;
-use bevy_utils::{Parallel, TypeIdMap};
+use bevy_utils::Parallel;
 use core::any::{Any, TypeId};
 use core::hash::{BuildHasher, Hasher};
 use core::{hash::Hash, marker::PhantomData};
-use derive_more::From;
 use smallvec::SmallVec;
 use tracing::error;
 
@@ -1395,26 +1394,12 @@ pub struct PhaseParams<'a> {
     pub rangefinder: &'a ViewRangefinder3d,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deref)]
-pub struct PhaseItemId(TypeId);
-
-impl PhaseItemId {
-    pub fn of<PI: PhaseItem>() -> Self {
-        PhaseItemId(TypeId::of::<PI>())
-    }
-}
-
 pub trait PhaseItemExt: PhaseItem {
     type Phase: RenderPhase;
     type Phases: ViewRenderPhases + Resource;
     type Plugin: RenderPhasePlugin + Plugin;
 
-    fn id() -> PhaseItemId {
-        PhaseItemId::of::<Self>()
-    }
-
-    // TODO: add enable_shadow, enable_prepass
-    fn try_match(alpha_mode: AlphaMode, use_transmission: bool) -> Option<PhaseItemId>;
+    const PhaseType: RenderPhaseType;
 
     fn queue(render_phase: &mut Self::Phase, params: &PhaseParams);
 }
@@ -1771,9 +1756,8 @@ pub struct MaterialProperties {
     /// This allows taking color output from the [`Opaque3d`] pass as an input, (for screen-space transmission) but requires
     /// rendering to take place in a separate [`Transmissive3d`] pass.
     pub reads_view_transmission_texture: bool,
+    pub render_phase_type: RenderPhaseType,
     pub material_layout: Option<BindGroupLayoutDescriptor>,
-    /// Backing array is a size of 4 because the `StandardMaterial` needs 4 render phases by default
-    pub phase_items: SmallVec<[(PassId, PhaseItemId); 4]>, // TODO: need design
     /// Backing array is a size of 4 because the `StandardMaterial` needs 4 draw functions by default
     pub draw_functions: SmallVec<[(PassId, DrawFunctionId); 4]>,
     /// Backing array is a size of 3 because the `StandardMaterial` has 3 custom shaders (`frag`, `prepass_frag`, `deferred_frag`) which is the
@@ -1824,18 +1808,6 @@ impl MaterialProperties {
     pub fn add_draw_function(&mut self, pass_id: PassId, draw_function: DrawFunctionId) {
         self.draw_functions.push((pass_id, draw_function));
     }
-
-    pub fn get_phase_item(&self, pass_id: PassId) -> Option<PhaseItemId> {
-        self.phase_items
-            .iter()
-            .find(|(id, _)| *id == pass_id)
-            .map(|(_, shader)| shader)
-            .cloned()
-    }
-
-    pub fn add_phase_item(&mut self, pass_id: PassId, phase_item: PhaseItemId) {
-        self.phase_items.push((pass_id, phase_item));
-    }
 }
 
 // #[derive(Clone, Copy, Default)]
@@ -1846,6 +1818,42 @@ impl MaterialProperties {
 //     Transmissive,
 //     Transparent,
 // }
+
+bitflags::bitflags! {
+    // NOTE: Remember to update `RenderPhaseType::len()` when adding new variants
+    /// Defines all the possible render phase types for a material.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub struct RenderPhaseType: u8 {
+        const Opaque =       1 << 0;
+        const AlphaMask =    1 << 1;
+        const Transmissive = 1 << 2;
+        const Transparent =  1 << 3;
+    }
+}
+
+impl Default for RenderPhaseType {
+    fn default() -> Self {
+        RenderPhaseType::Opaque
+    }
+}
+
+impl RenderPhaseType {
+    /// Returns the number of bits defined in [`RenderPhaseType`].
+    pub const fn len() -> usize {
+        4
+    }
+
+    /// Returns the index of the lowest bit that is set in this flag set.
+    pub fn to_index(self) -> usize {
+        self.bits().trailing_zeros() as usize
+    }
+}
+
+#[derive(Resource, Deref, DerefMut)]
+pub struct PassPhaseDrawFunctions(HashMap<PassId, PhaseDrawFunctions, NoOpHash>);
+
+#[derive(Deref, DerefMut)]
+struct PhaseDrawFunctions(SmallVec<[DrawFunctionId; RenderPhaseType::len()]>);
 
 /// A resource that maps each untyped material ID to its binding.
 ///
@@ -1860,27 +1868,6 @@ pub struct PreparedMaterial {
     pub binding: MaterialBindingId,
     pub properties: Arc<MaterialProperties>,
 }
-
-#[derive(Copy, Clone)]
-struct PhaseMatcherContext {
-    alpha_mode: AlphaMode,
-    is_transparent: bool,
-}
-
-type PhaseMatcher = fn(PhaseMatcherContext) -> bool;
-
-// NOTE: Users should manually prepare this resource
-#[derive(Resource, Deref, DerefMut)]
-pub struct PhaseMatchers(
-    HashMap<
-        PassId,
-        SmallVec<[(PhaseMatcher, PhaseItemId, DrawFunctionId); 4]>, // add MAX_PHASES
-        NoOpHash,
-    >,
-);
-
-#[derive(Resource, Deref, DerefMut)]
-pub struct PassPhases(HashMap<PassId, Vec<PhaseItemId>>);
 
 // orphan rules T_T
 impl<M: Material> ErasedRenderAsset for MeshMaterial3d<M>
@@ -1900,13 +1887,15 @@ where
         // SRes<DrawFunctions<AlphaMask3d>>,
         // SRes<DrawFunctions<Transmissive3d>>,
         // SRes<DrawFunctions<Transparent3d>>,
+
         // SRes<DrawFunctions<Opaque3dPrepass>>,
         // SRes<DrawFunctions<AlphaMask3dPrepass>>,
+
         // SRes<DrawFunctions<Opaque3dDeferred>>,
         // SRes<DrawFunctions<AlphaMask3dDeferred>>,
+        
         // SRes<DrawFunctions<Shadow>>,
-        SRes<PhaseMatchers>,
-        // SRes<PassPhases>,
+        SRes<PassPhaseDrawFunctions>,
         SRes<AssetServer>,
         M::Param,
     );
@@ -1920,24 +1909,13 @@ where
             default_opaque_render_method,
             bind_group_allocators,
             render_material_bindings,
-            // opaque_draw_functions,
-            // alpha_mask_draw_functions,
-            // transmissive_draw_functions,
-            // transparent_draw_functions,
-            // opaque_prepass_draw_functions,
-            // alpha_mask_prepass_draw_functions,
-            // opaque_deferred_draw_functions,
-            // alpha_mask_deferred_draw_functions,
-            // shadow_draw_functions,
-            phase_matcher,
-            // pass_phases,
+            pass_phase_draw_functions,
             asset_server,
             material_param,
         ): &mut SystemParamItem<Self::Param>,
     ) -> Result<Self::ErasedAsset, PrepareAssetError<Self::SourceAsset>> {
         let shadows_enabled = M::enable_shadows();
         let prepass_enabled = M::enable_prepass();
-
         // let draw_opaque_pbr = opaque_draw_functions.read().id::<DrawMaterial>();
         // let draw_alpha_mask_pbr = alpha_mask_draw_functions.read().id::<DrawMaterial>();
         // let draw_transmissive_pbr = transmissive_draw_functions.read().id::<DrawMaterial>();
@@ -1969,18 +1947,16 @@ where
         let reads_view_transmission_texture =
             mesh_pipeline_key_bits.contains(MeshPipelineKey::READS_VIEW_TRANSMISSION_TEXTURE);
 
-        // TODO: Redesign this
-        // let render_phase_type = match material.alpha_mode() {
-        //     AlphaMode::Blend | AlphaMode::Premultiplied | AlphaMode::Add | AlphaMode::Multiply => {
-        //         RenderPhaseType::Transparent
-        //     }
-        //     _ if reads_view_transmission_texture => RenderPhaseType::Transmissive,
-        //     AlphaMode::Opaque | AlphaMode::AlphaToCoverage => RenderPhaseType::Opaque,
-        //     AlphaMode::Mask(_) => RenderPhaseType::AlphaMask,
-        // };
+        let render_phase_type = match material.alpha_mode() {
+            AlphaMode::Blend | AlphaMode::Premultiplied | AlphaMode::Add | AlphaMode::Multiply => {
+                RenderPhaseType::Transparent
+            }
+            _ if reads_view_transmission_texture => RenderPhaseType::Transmissive,
+            AlphaMode::Opaque | AlphaMode::AlphaToCoverage => RenderPhaseType::Opaque,
+            AlphaMode::Mask(_) => RenderPhaseType::AlphaMask,
+        };
 
-        let phase_items = SmallVec::new();
-        // phase_matcher.
+        let render_phase_type_index = render_phase_type.to_index();
 
         // let draw_function_id = match render_phase_type {
         //     RenderPhaseType::Opaque => draw_opaque_pbr,
@@ -2035,13 +2011,14 @@ where
         M::shaders()
             .into_iter()
             .for_each(|(pass_id, ShaderSet { vertex, fragment })| {
-                add_shader(pass_id, vertex);
-                add_shader(pass_id, fragment);
-                phase_matcher.get(pass_id)
-                // TODO
-                // if let Some(draw) = pass_draw_functions.get(&pass_id) {
-                //     draw_functions.push((MaterialDrawFunction(pass_id).intern(), *draw))
-                // };
+                if let Some(draw) = pass_phase_draw_functions
+                    .get(&pass_id)
+                    .and_then(|functions| functions.get(render_phase_type_index))
+                {
+                    draw_functions.push((pass_id, *draw));
+                    add_shader(pass_id, vertex);
+                    add_shader(pass_id, fragment);
+                };
             });
 
         #[cfg(feature = "meshlet")]
