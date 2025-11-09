@@ -8,10 +8,11 @@ use bevy_asset::prelude::AssetChanged;
 use bevy_asset::{Asset, AssetEventSystems, AssetId, AssetServer, UntypedAssetId};
 use bevy_camera::visibility::ViewVisibility;
 use bevy_camera::ScreenSpaceTransmissionQuality;
+use bevy_core_pipeline::core_3d::Opaque3d;
 use bevy_core_pipeline::tonemapping::Tonemapping;
 use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::change_detection::Tick;
-use bevy_ecs::system::{ReadOnlySystemParam, SystemChangeTick};
+use bevy_ecs::system::{ReadOnlySystemParam, StaticSystemParam, SystemChangeTick, SystemParam};
 use bevy_ecs::{
     prelude::*,
     system::{
@@ -326,11 +327,11 @@ where
 {
     type Specializer: PipelineSpecializer;
 
-    type PhaseItems: ToPhasePlugins<Self>;
+    type PhaseItems: ToPhasePlugins<Self> + ToPhaseParam;
 
     // NOTE: Theoretically, the relationship between PhaseItem and RenderCommand
     // is many-to-many, but I haven't seen many use cases of this. For simplicity
-    // of implementation, I’m keeping it this way for now.
+    // of implementation, we keep it that way.
     type RenderCommand: Send + Sync;
 
     fn id() -> PassId {
@@ -482,8 +483,8 @@ where
         };
 
         render_app
-            .init_resource::<SpecializedMaterialPipelineCache<P, PIE>>()
-            .init_resource::<PassSpecializedMeshPipelines<P, PIE, P::Specializer>>()
+            // .init_resource::<SpecializedMaterialPipelineCache<P, PIE>>()
+            // .init_resource::<PassSpecializedMeshPipelines<P, PIE, P::Specializer>>()
             .init_resource::<DrawFunctions<PIE>>()
             .add_render_command::<PIE, P::RenderCommand>()
             .add_systems(
@@ -500,7 +501,7 @@ where
                         .after(prepare_assets::<RenderMesh>)
                         .after(collect_meshes_for_gpu_building)
                         .after(set_mesh_motion_vector_flags),
-                    queue_material_meshes::<P, PIE>.in_set(RenderSystems::QueueMeshes),
+                    // queue_material_meshes::<P, PIE>.in_set(RenderSystems::QueueMeshes),
                 ),
             );
     }
@@ -525,17 +526,17 @@ where
 
 // For multiple items
 macro_rules! impl_to_phase_plugins {
-    ($($T:ident),+) => {
-        impl<P, $($T),*> ToPhasePlugins<P> for ($($T,)+)
+    ($($name:ident),+) => {
+        impl<P, $($name),*> ToPhasePlugins<P> for ($($name,)+)
         where
             P: Pass,
-            $(P::RenderCommand: RenderCommand<$T>,)+
-            $(<P::RenderCommand as RenderCommand<$T>>::Param: ReadOnlySystemParam,)+
-            $($T: PhaseItemExt),+
+            $(P::RenderCommand: RenderCommand<$name>,)+
+            $(<P::RenderCommand as RenderCommand<$name>>::Param: ReadOnlySystemParam,)+
+            $($name: PhaseItemExt),+
         {
             fn add_plugins(app: &mut App, debug_flags: RenderDebugFlags) {
                 app.add_plugins((
-                    $(PassPhasePlugin::<P, $T>::new(debug_flags),)+
+                    $(PassPhasePlugin::<P, $name>::new(debug_flags),)+
                 ));
             }
         }
@@ -1067,19 +1068,19 @@ pub struct EntitiesNeedingSweep {
 pub fn late_sweep_entities_needing_specialization<P: Pass, PIE: PhaseItemExt>(
     views: Query<&ExtractedView>,
     mut entities_needing_sweep: ResMut<EntitiesNeedingSweep>,
-    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P, PIE>>,
+    // mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P, PIE>>,
 ) {
     let Some(entities) = entities_needing_sweep.get_mut(&P::id()) else {
         return;
     };
     for view in views {
-        let Some(cache) = specialized_material_pipeline_cache.get_mut(&view.retained_view_entity)
-        else {
-            continue;
-        };
-        for &entity in entities.iter() {
-            cache.remove(&MainEntity::from(entity));
-        }
+        // let Some(cache) = specialized_material_pipeline_cache.get_mut(&view.retained_view_entity)
+        // else {
+        //     continue;
+        // };
+        // for &entity in entities.iter() {
+        //     cache.remove(&MainEntity::from(entity));
+        // }
     }
     entities.clear();
 }
@@ -1156,14 +1157,14 @@ pub struct EntitySpecializationTickPair {
 
 /// Stores the [`SpecializedMaterialViewPipelineCache`] for each view.
 #[derive(Resource, Deref, DerefMut)]
-pub struct SpecializedMaterialPipelineCache<P, PIE> {
+pub struct SpecializedMaterialPipelineCache<P> {
     // view entity -> view pipeline cache
     #[deref]
     map: HashMap<RetainedViewEntity, SpecializedMaterialViewPipelineCache>,
-    _marker: PhantomData<(P, PIE)>,
+    _marker: PhantomData<P>,
 }
 
-impl<P, PIE> Default for SpecializedMaterialPipelineCache<P, PIE> {
+impl<P> Default for SpecializedMaterialPipelineCache<P> {
     fn default() -> Self {
         Self {
             map: Default::default(),
@@ -1236,25 +1237,25 @@ pub struct ViewKeyCache<P>(
 pub struct ViewSpecializationTicks<P>(#[deref] HashMap<RetainedViewEntity, Tick>, PhantomData<P>);
 
 #[derive(Resource, Deref, DerefMut, FromWorld)]
-pub struct PassSpecializedMeshPipelines<P, PIE, S: SpecializedMeshPipeline>(
+pub struct PassSpecializedMeshPipelines<P, S: SpecializedMeshPipeline>(
     #[deref] SpecializedMeshPipelines<S>,
-    PhantomData<(P, PIE)>,
+    PhantomData<P>,
 );
 
-pub fn specialize_material_meshes<P: Pass, PIE: PhaseItemExt>(
+pub fn specialize_material_meshes<P: Pass>(
     render_meshes: Res<RenderAssets<RenderMesh>>,
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_mesh_instances: Res<RenderMeshInstances>,
     render_material_instances: Res<RenderMaterialInstances>,
     render_lightmaps: Res<RenderLightmaps>,
     render_visibility_ranges: Res<RenderVisibilityRanges>,
-    render_phases: Res<PIE::Phases>,
+    view_render_phases_tuple: <P::PhaseItems as ToPhaseParam>::ParamMut,
     views: Query<(&ExtractedView, &RenderVisibleEntities)>,
     view_key_cache: Res<ViewKeyCache<P>>, // TODO: <P>
     entity_specialization_ticks: Res<EntitySpecializationTicks>,
     view_specialization_ticks: Res<ViewSpecializationTicks<P>>, // TODO: Make this generic
-    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P, PIE>>, // TODO: <P>
-    mut pipelines: ResMut<PassSpecializedMeshPipelines<P, PIE, P::Specializer>>,
+    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P>>, // TODO: <P>
+    mut pipelines: ResMut<PassSpecializedMeshPipelines<P, P::Specializer>>,
     pipeline: Res<<P::Specializer as PipelineSpecializer>::Pipeline>,
     pipeline_cache: Res<PipelineCache>,
     ticks: SystemChangeTick,
@@ -1269,7 +1270,7 @@ pub fn specialize_material_meshes<P: Pass, PIE: PhaseItemExt>(
         all_views.insert(view.retained_view_entity);
 
         // TODO: Move this part to a separate system
-        if !render_phases.contains_key(&view.retained_view_entity) {
+        if !view_render_phases_tuple.contains_key(&view.retained_view_entity) {
             continue;
         }
 
@@ -1381,7 +1382,7 @@ where
     }
 }
 
-pub struct PhaseParams<'a> {
+pub struct PhaseContext<'a> {
     pub mesh_instance: &'a RenderMeshQueueData<'a>,
     pub material: &'a PreparedMaterial,
     pub mesh_allocator: &'a Res<'a, MeshAllocator>,
@@ -1401,11 +1402,11 @@ pub trait PhaseItemExt: PhaseItem {
 
     const PhaseType: RenderPhaseType;
 
-    fn queue(render_phase: &mut Self::Phase, params: &PhaseParams);
+    fn queue(render_phase: &mut Self::Phase, context: &PhaseContext);
 }
 
 pub trait RenderPhase {
-    fn add(&mut self, params: &PhaseParams);
+    fn add(&mut self, context: &PhaseContext);
 
     fn validate_cached_entity(
         &mut self,
@@ -1415,20 +1416,24 @@ pub trait RenderPhase {
 }
 
 trait ViewRenderPhases {
-    type Phase: RenderPhase;
+    type Phase<'a>: RenderPhase
+    where
+        Self: 'a;
 
     // contains_key
     fn contains_key(&self, view_entity: &RetainedViewEntity) -> bool;
 
-    fn get_mut(&mut self, view_entity: &RetainedViewEntity) -> Option<&mut Self::Phase>;
+    fn get_mut<'a>(&'a mut self, view_entity: &RetainedViewEntity) -> Self::Phase<'a>;
 }
+
+// trait NotBinnedRenderPhase {}
 
 impl<BPI> RenderPhase for BinnedRenderPhase<BPI>
 where
     BPI: BinnedPhaseItem + PhaseItemExt<Phase = BinnedRenderPhase<BPI>>,
 {
     #[inline]
-    fn add(&mut self, params: &PhaseParams) {
+    fn add(&mut self, params: &PhaseContext) {
         BPI::queue(self, params);
     }
 
@@ -1447,7 +1452,7 @@ where
     SPI: SortedPhaseItem + PhaseItemExt<Phase = SortedRenderPhase<SPI>>,
 {
     #[inline]
-    fn add(&mut self, params: &PhaseParams) {
+    fn add(&mut self, params: &PhaseContext) {
         SPI::queue(self, params);
     }
 
@@ -1461,11 +1466,37 @@ where
     }
 }
 
+impl<'a, T> RenderPhase for Option<&'a mut T>
+where
+    T: RenderPhase,
+{
+    #[inline]
+    fn add(&mut self, params: &PhaseContext) {
+        if let Some(phase) = self {
+            phase.add(params);
+        }
+    }
+
+    #[inline]
+    fn validate_cached_entity(
+        &mut self,
+        visible_entity: MainEntity,
+        current_change_tick: Tick,
+    ) -> bool {
+        if let Some(phase) = self {
+            phase.validate_cached_entity(visible_entity, current_change_tick)
+        } else {
+            // If phase is None, then it has no cached entities, so it is always invalid
+            false
+        }
+    }
+}
+
 impl<BPI> ViewRenderPhases for ViewBinnedRenderPhases<BPI>
 where
     BPI: BinnedPhaseItem + PhaseItemExt<Phase = BinnedRenderPhase<BPI>>,
 {
-    type Phase = BinnedRenderPhase<BPI>;
+    type Phase<'a> = Option<&'a mut BinnedRenderPhase<BPI>>;
 
     #[inline]
     fn contains_key(&self, view_entity: &RetainedViewEntity) -> bool {
@@ -1473,7 +1504,7 @@ where
     }
 
     #[inline]
-    fn get_mut(&mut self, view_entity: &RetainedViewEntity) -> Option<&mut Self::Phase> {
+    fn get_mut<'a>(&'a mut self, view_entity: &RetainedViewEntity) -> Self::Phase<'a> {
         self.0.get_mut(view_entity)
     }
 }
@@ -1482,7 +1513,7 @@ impl<SPI> ViewRenderPhases for ViewSortedRenderPhases<SPI>
 where
     SPI: SortedPhaseItem + PhaseItemExt<Phase = SortedRenderPhase<SPI>>,
 {
-    type Phase = SortedRenderPhase<SPI>;
+    type Phase<'a> = Option<&'a mut SortedRenderPhase<SPI>>;
 
     #[inline]
     fn contains_key(&self, view_entity: &RetainedViewEntity) -> bool {
@@ -1490,27 +1521,147 @@ where
     }
 
     #[inline]
-    fn get_mut(&mut self, view_entity: &RetainedViewEntity) -> Option<&mut Self::Phase> {
+    fn get_mut<'a>(&'a mut self, view_entity: &RetainedViewEntity) -> Self::Phase<'a> {
         self.0.get_mut(view_entity)
     }
 }
 
+impl<T> ViewRenderPhases for SResMut<T>
+where
+    T: ViewRenderPhases + Resource,
+{
+    type Phase<'a>
+        = T::Phase<'a>
+    where
+        Self: 'a;
+
+    #[inline]
+    fn contains_key(&self, view_entity: &RetainedViewEntity) -> bool {
+        (**self).contains_key(view_entity)
+    }
+
+    #[inline]
+    fn get_mut<'a>(&'a mut self, view_entity: &RetainedViewEntity) -> Self::Phase<'a> {
+        (**self).get_mut(view_entity)
+    }
+}
+
+macro_rules! impl_render_phase_for_tuples {
+    ($($name:ident),*) => {
+        impl<'a, $($name),*> RenderPhase for ($(Option<&'a mut $name>,)*)
+        where
+            $($name: RenderPhase,)*
+        {
+            #[inline]
+            fn add(&mut self, params: &PhaseContext) {
+                let ($( $name, )*) = self;
+                $(
+                    if let Some(phase) = $name {
+                        phase.add(params);
+                    }
+                )*
+            }
+            #[inline]
+            fn validate_cached_entity(
+                &mut self,
+                visible_entity: MainEntity,
+                current_change_tick: Tick,
+            ) -> bool {
+                let ($( $name, )*) = self;
+                let mut valid = false;
+                $(
+                    if let Some(phase) = $name {
+                        valid |= phase.validate_cached_entity(visible_entity, current_change_tick);
+                    }
+                )*
+                valid
+            }
+        }
+    };
+}
+
+impl_render_phase_for_tuples!(A);
+impl_render_phase_for_tuples!(A, B);
+impl_render_phase_for_tuples!(A, B, C);
+impl_render_phase_for_tuples!(A, B, C, D);
+
+macro_rules! impl_view_render_phases_tuple {
+    ($($name:ident),+) => {
+        impl<$($name),+> ViewRenderPhases for ($($name,)+)
+        where
+            $($name: ViewRenderPhases,)+
+            for<'a> ($($name::Phase<'a>,)+): RenderPhase,
+        {
+            type Phase<'a> = ($($name::Phase<'a>,)+)
+            where
+                Self:'a;
+
+            #[inline]
+            fn contains_key(&self, view_entity: &RetainedViewEntity) -> bool {
+                let ($($name,)+) = self;
+                false $(|| $name.contains_key(view_entity))+
+            }
+
+            #[inline]
+            fn get_mut<'a>(&'a mut self, view_entity: &RetainedViewEntity) -> Self::Phase<'a> {
+                let ($($name,)+) = self;
+                ($($name.get_mut(view_entity),)+)
+            }
+        }
+    };
+}
+
+impl_view_render_phases_tuple!(A);
+impl_view_render_phases_tuple!(A, B);
+impl_view_render_phases_tuple!(A, B, C);
+impl_view_render_phases_tuple!(A, B, C, D);
+
+pub trait ToPhaseParam {
+    type ParamMut: ViewRenderPhases;
+}
+
+impl<PIE: PhaseItemExt> ToPhaseParam for PIE {
+    type ParamMut = SResMut<<PIE as PhaseItemExt>::Phases>;
+}
+
+macro_rules! impl_to_phase_params {
+    ($($name:ident),+) => {
+        impl<$($name),+> ToPhaseParam for ($($name,)+)
+        where
+            $($name: ToPhaseParam,)+
+            $($name::ParamMut: ViewRenderPhases,)+
+            for<'a> ($(<$name::ParamMut as ViewRenderPhases>::Phase<'a>,)+): RenderPhase,
+        {
+            type ParamMut = ($(
+                $name::ParamMut,
+            )+);
+        }
+    };
+}
+
+impl_to_phase_params!(T0);
+impl_to_phase_params!(T0, T1);
+impl_to_phase_params!(T0, T1, T2);
+impl_to_phase_params!(T0, T1, T2, T3);
+
 /// For each view, iterates over all the meshes visible from that view and adds
 /// them to [`BinnedRenderPhase`]s or [`SortedRenderPhase`]s as appropriate.
-pub fn queue_material_meshes<P: Pass, PIE: PhaseItemExt>(
+pub fn queue_material_meshes<P: Pass>(
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_mesh_instances: Res<RenderMeshInstances>,
     render_material_instances: Res<RenderMaterialInstances>,
     mesh_allocator: Res<MeshAllocator>,
     gpu_preprocessing_support: Res<GpuPreprocessingSupport>,
-    mut view_render_phases: ResMut<PIE::Phases>,
+    mut view_render_phases_tuple: <P::PhaseItems as ToPhaseParam>::ParamMut,
     views: Query<(&ExtractedView, &RenderVisibleEntities)>, // TODO: Add PhaseEntities
-    specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P, PIE>>,
+    specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P>>,
 ) {
     for (view, visible_entities) in &views {
-        let Some(render_phase) = view_render_phases.get_mut(&view.retained_view_entity) else {
-            continue;
-        };
+        // let Some(render_phase) = view_render_phases.get_mut(&view.retained_view_entity) else {
+        //     continue;
+        // };
+
+        let mut render_phase = view_render_phases_tuple.get_mut(&view.retained_view_entity);
 
         let Some(view_specialized_material_pipeline_cache) =
             specialized_material_pipeline_cache.get(&view.retained_view_entity)
@@ -1549,7 +1700,7 @@ pub fn queue_material_meshes<P: Pass, PIE: PhaseItemExt>(
                 continue;
             };
 
-            let params = PhaseParams {
+            let context = PhaseContext {
                 mesh_instance: &mesh_instance,
                 material,
                 mesh_allocator: &mesh_allocator,
@@ -1561,7 +1712,7 @@ pub fn queue_material_meshes<P: Pass, PIE: PhaseItemExt>(
                 gpu_preprocessing_support: &gpu_preprocessing_support,
                 rangefinder: &rangefinder,
             };
-            render_phase.add(&params);
+            render_phase.add(&context);
         }
     }
 }
@@ -1893,7 +2044,7 @@ where
 
         // SRes<DrawFunctions<Opaque3dDeferred>>,
         // SRes<DrawFunctions<AlphaMask3dDeferred>>,
-        
+
         // SRes<DrawFunctions<Shadow>>,
         SRes<PassPhaseDrawFunctions>,
         SRes<AssetServer>,
