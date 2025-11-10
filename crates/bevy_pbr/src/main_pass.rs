@@ -36,12 +36,7 @@ use bevy_render::{
 use bevy_shader::ShaderDefVal;
 
 use crate::{
-    alpha_mode_pipeline_key, screen_space_specular_transmission_pipeline_key,
-    tonemapping_pipeline_key, DistanceFog, DrawMaterial, ErasedMaterialPipelineKey,
-    MaterialPipeline, MaterialProperties, MeshPipeline, MeshPipelineKey, OpaqueRendererMethod,
-    Pass, PassId, PassPlugin, PhaseItemExt, PhaseParams, PipelineSpecializer, PreparedMaterial,
-    RenderLightmap, RenderMeshInstanceFlags, RenderPhaseType, RenderViewLightProbes,
-    ScreenSpaceAmbientOcclusion, ViewKeyCache, ViewSpecializationTicks, MATERIAL_BIND_GROUP_INDEX,
+    BinnedFamily, DistanceFog, DrawMaterial, ErasedMaterialPipelineKey, MATERIAL_BIND_GROUP_INDEX, MaterialPipeline, MaterialProperties, MeshPipeline, MeshPipelineKey, OpaqueRendererMethod, Pass, PassId, PassPlugin, PhaseFamily, PhaseItemExt, PhaseParams, PipelineSpecializer, PreparedMaterial, RenderLightmap, RenderMeshInstanceFlags, RenderPhaseType, RenderViewLightProbes, ScreenSpaceAmbientOcclusion, SortedFamily, ViewKeyCache, ViewSpecializationTicks, alpha_mode_pipeline_key, screen_space_specular_transmission_pipeline_key, tonemapping_pipeline_key
 };
 
 #[derive(Default)]
@@ -324,12 +319,11 @@ impl SpecializedMeshPipeline for MaterialPipelineSpecializer {
 }
 
 impl PhaseItemExt for Opaque3d {
-    type Phase = BinnedRenderPhase<Self>;
-    type Phases = ViewBinnedRenderPhases<Self>;
-    type Plugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
+    type Family = BinnedFamily;
+
     const PhaseType: RenderPhaseType = RenderPhaseType::Opaque;
 
-    fn queue(render_phase: &mut Self::Phase, params: &PhaseParams) {
+    fn queue(render_phase: &mut <Self::Family as PhaseFamily>::Phase, params: &PhaseParams) {
         if params.material.properties.render_method == OpaqueRendererMethod::Deferred {
             // Even though we aren't going to insert the entity into
             // a bin, we still want to update its cache entry. That
@@ -370,9 +364,7 @@ impl PhaseItemExt for Opaque3d {
 }
 
 impl PhaseItemExt for AlphaMask3d {
-    type Phase = BinnedRenderPhase<Self>;
-    type Phases = ViewBinnedRenderPhases<Self>;
-    type Plugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
+    type Family = BinnedFamily;
     const PhaseType: RenderPhaseType = RenderPhaseType::AlphaMask;
 
     fn queue(render_phase: &mut Self::Phase, params: &PhaseParams) {
@@ -403,9 +395,8 @@ impl PhaseItemExt for AlphaMask3d {
 }
 
 impl PhaseItemExt for Transmissive3d {
-    type Phase = SortedRenderPhase<Self>;
-    type Phases = ViewSortedRenderPhases<Self>;
-    type Plugin = SortedRenderPhasePlugin<Self, MeshPipeline>;
+    type Family = SortedFamily;
+
     const PhaseType: RenderPhaseType = RenderPhaseType::Transmissive;
 
     fn queue(render_phase: &mut Self::Phase, params: &PhaseParams) {
@@ -430,9 +421,8 @@ impl PhaseItemExt for Transmissive3d {
 }
 
 impl PhaseItemExt for Transparent3d {
-    type Phase = SortedRenderPhase<Self>;
-    type Phases = ViewSortedRenderPhases<Self>;
-    type Plugin = SortedRenderPhasePlugin<Self, MeshPipeline>;
+    type Family = SortedFamily;
+
     const PhaseType: RenderPhaseType = RenderPhaseType::Transparent;
 
     fn queue(render_phase: &mut Self::Phase, params: &PhaseParams) {
