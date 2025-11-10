@@ -420,7 +420,11 @@ impl<P: Pass> PassPlugin<P> {
 // - Don't forget Drawfunctions<T>
 // - Making a generic render graph node
 
-impl<P: Pass> Plugin for PassPlugin<P> {
+impl<P: Pass> Plugin for PassPlugin<P>
+where
+    for<'w, 's> <<<P as Pass>::PhaseItems as ToPhaseParam>::ParamMut as SystemParam>::Item<'w, 's>:
+        ViewRenderPhases,
+{
     fn build(&self, app: &mut App) {
         // This is equivalent to: app.add_plugins((PassPhasePlugin::<Pass, Opaque3d>::new(), ...));
         P::PhaseItems::add_plugins(app, self.debug_flags);
@@ -430,12 +434,31 @@ impl<P: Pass> Plugin for PassPlugin<P> {
         };
         // For all instances of PassPlugin
         render_app
+            .init_resource::<SpecializedMaterialPipelineCache<P>>()
+            .init_resource::<PassSpecializedMeshPipelines<P, P::Specializer>>()
             .init_resource::<EntitySpecializationTicks>()
             .init_resource::<ViewKeyCache<P>>() // Double check
             .init_resource::<ViewSpecializationTicks<P>>() // Double check
             .init_resource::<RenderMaterialInstances>()
             .init_resource::<MaterialBindGroupAllocators>()
-            .add_systems(RenderStartup, init_material_pipeline);
+            .add_systems(RenderStartup, init_material_pipeline)
+            .add_systems(
+                ExtractSchedule,
+                late_sweep_entities_needing_specialization::<P>
+                    .after(MaterialEarlySweepEntitiesNeedingSpecializationSystems)
+                    .before(late_sweep_material_instances),
+            )
+            .add_systems(
+                Render,
+                (
+                    specialize_material_meshes::<P>
+                        .in_set(RenderSystems::PrepareMeshes)
+                        .after(prepare_assets::<RenderMesh>)
+                        .after(collect_meshes_for_gpu_building)
+                        .after(set_mesh_motion_vector_flags),
+                    queue_material_meshes::<P>.in_set(RenderSystems::QueueMeshes),
+                ),
+            );
 
         // Fake singleton start
         if render_app.world().contains_resource::<PassPluginLoaded>() {
@@ -483,27 +506,8 @@ where
         };
 
         render_app
-            // .init_resource::<SpecializedMaterialPipelineCache<P, PIE>>()
-            // .init_resource::<PassSpecializedMeshPipelines<P, PIE, P::Specializer>>()
             .init_resource::<DrawFunctions<PIE>>()
-            .add_render_command::<PIE, P::RenderCommand>()
-            .add_systems(
-                ExtractSchedule,
-                late_sweep_entities_needing_specialization::<P, PIE>
-                    .after(MaterialEarlySweepEntitiesNeedingSpecializationSystems)
-                    .before(late_sweep_material_instances),
-            )
-            .add_systems(
-                Render,
-                (
-                    specialize_material_meshes::<P, PIE>
-                        .in_set(RenderSystems::PrepareMeshes)
-                        .after(prepare_assets::<RenderMesh>)
-                        .after(collect_meshes_for_gpu_building)
-                        .after(set_mesh_motion_vector_flags),
-                    // queue_material_meshes::<P, PIE>.in_set(RenderSystems::QueueMeshes),
-                ),
-            );
+            .add_render_command::<PIE, P::RenderCommand>();
     }
 }
 
@@ -1065,7 +1069,7 @@ pub struct EntitiesNeedingSweep {
 /// This runs after all invocations of `early_sweep_entities_needing_specialization`.
 /// Because `early_sweep_entities_needing_specialization` is a per-material system and
 /// the SpecializedMaterialPipelineCache is per-pass, we have to perform sweep like this.
-pub fn late_sweep_entities_needing_specialization<P: Pass, PIE: PhaseItemExt>(
+pub fn late_sweep_entities_needing_specialization<P: Pass>(
     views: Query<&ExtractedView>,
     mut entities_needing_sweep: ResMut<EntitiesNeedingSweep>,
     // mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P, PIE>>,
@@ -1249,7 +1253,7 @@ pub fn specialize_material_meshes<P: Pass>(
     render_material_instances: Res<RenderMaterialInstances>,
     render_lightmaps: Res<RenderLightmaps>,
     render_visibility_ranges: Res<RenderVisibilityRanges>,
-    view_render_phases_tuple: <P::PhaseItems as ToPhaseParam>::ParamMut,
+    view_render_phases_tuple: StaticSystemParam<<P::PhaseItems as ToPhaseParam>::ParamMut>,
     views: Query<(&ExtractedView, &RenderVisibleEntities)>,
     view_key_cache: Res<ViewKeyCache<P>>, // TODO: <P>
     entity_specialization_ticks: Res<EntitySpecializationTicks>,
@@ -1261,6 +1265,8 @@ pub fn specialize_material_meshes<P: Pass>(
     ticks: SystemChangeTick,
 ) where
     <P::Specializer as SpecializedMeshPipeline>::Key: Send + Sync,
+    for<'w, 's> <<<P as Pass>::PhaseItems as ToPhaseParam>::ParamMut as SystemParam>::Item<'w, 's>:
+        ViewRenderPhases,
 {
     // Record the retained IDs of all shadow views so that we can expire old
     // pipeline IDs.
@@ -1423,7 +1429,7 @@ trait ViewRenderPhases {
     // contains_key
     fn contains_key(&self, view_entity: &RetainedViewEntity) -> bool;
 
-    fn get_mut<'a>(&'a mut self, view_entity: &RetainedViewEntity) -> Self::Phase<'a>;
+    fn get_mut<'a>(&'a mut self, view_entity: &RetainedViewEntity) -> Option<Self::Phase<'a>>;
 }
 
 // trait NotBinnedRenderPhase {}
@@ -1466,15 +1472,39 @@ where
     }
 }
 
-impl<'a, T> RenderPhase for Option<&'a mut T>
+// impl<'a, T> RenderPhase for Option<&'a mut T>
+// where
+//     T: RenderPhase,
+// {
+//     #[inline]
+//     fn add(&mut self, params: &PhaseContext) {
+//         if let Some(phase) = self {
+//             phase.add(params);
+//         }
+//     }
+
+//     #[inline]
+//     fn validate_cached_entity(
+//         &mut self,
+//         visible_entity: MainEntity,
+//         current_change_tick: Tick,
+//     ) -> bool {
+//         if let Some(phase) = self {
+//             phase.validate_cached_entity(visible_entity, current_change_tick)
+//         } else {
+//             // If phase is None, then it has no cached entities, so it is always invalid
+//             false
+//         }
+//     }
+// }
+
+impl<'a, T> RenderPhase for &'a mut T
 where
     T: RenderPhase,
 {
     #[inline]
     fn add(&mut self, params: &PhaseContext) {
-        if let Some(phase) = self {
-            phase.add(params);
-        }
+        (*self).add(params);
     }
 
     #[inline]
@@ -1483,11 +1513,8 @@ where
         visible_entity: MainEntity,
         current_change_tick: Tick,
     ) -> bool {
-        if let Some(phase) = self {
-            phase.validate_cached_entity(visible_entity, current_change_tick)
-        } else {
-            // If phase is None, then it has no cached entities, so it is always invalid
-            false
+        {
+            (*self).validate_cached_entity(visible_entity, current_change_tick)
         }
     }
 }
@@ -1496,7 +1523,7 @@ impl<BPI> ViewRenderPhases for ViewBinnedRenderPhases<BPI>
 where
     BPI: BinnedPhaseItem + PhaseItemExt<Phase = BinnedRenderPhase<BPI>>,
 {
-    type Phase<'a> = Option<&'a mut BinnedRenderPhase<BPI>>;
+    type Phase<'a> = &'a mut BinnedRenderPhase<BPI>;
 
     #[inline]
     fn contains_key(&self, view_entity: &RetainedViewEntity) -> bool {
@@ -1504,7 +1531,7 @@ where
     }
 
     #[inline]
-    fn get_mut<'a>(&'a mut self, view_entity: &RetainedViewEntity) -> Self::Phase<'a> {
+    fn get_mut<'a>(&'a mut self, view_entity: &RetainedViewEntity) -> Option<Self::Phase<'a>> {
         self.0.get_mut(view_entity)
     }
 }
@@ -1513,7 +1540,7 @@ impl<SPI> ViewRenderPhases for ViewSortedRenderPhases<SPI>
 where
     SPI: SortedPhaseItem + PhaseItemExt<Phase = SortedRenderPhase<SPI>>,
 {
-    type Phase<'a> = Option<&'a mut SortedRenderPhase<SPI>>;
+    type Phase<'a> = &'a mut SortedRenderPhase<SPI>;
 
     #[inline]
     fn contains_key(&self, view_entity: &RetainedViewEntity) -> bool {
@@ -1521,7 +1548,7 @@ where
     }
 
     #[inline]
-    fn get_mut<'a>(&'a mut self, view_entity: &RetainedViewEntity) -> Self::Phase<'a> {
+    fn get_mut<'a>(&'a mut self, view_entity: &RetainedViewEntity) -> Option<Self::Phase<'a>> {
         self.0.get_mut(view_entity)
     }
 }
@@ -1541,10 +1568,44 @@ where
     }
 
     #[inline]
-    fn get_mut<'a>(&'a mut self, view_entity: &RetainedViewEntity) -> Self::Phase<'a> {
+    fn get_mut<'a>(&'a mut self, view_entity: &RetainedViewEntity) -> Option<Self::Phase<'a>> {
         (**self).get_mut(view_entity)
     }
 }
+
+// macro_rules! impl_render_phase_for_tuples {
+//     ($($name:ident),*) => {
+//         impl<'a, $($name),*> RenderPhase for ($(Option<&'a mut $name>,)*)
+//         where
+//             $($name: RenderPhase,)*
+//         {
+//             #[inline]
+//             fn add(&mut self, params: &PhaseContext) {
+//                 let ($( $name, )*) = self;
+//                 $(
+//                     if let Some(phase) = $name {
+//                         phase.add(params);
+//                     }
+//                 )*
+//             }
+//             #[inline]
+//             fn validate_cached_entity(
+//                 &mut self,
+//                 visible_entity: MainEntity,
+//                 current_change_tick: Tick,
+//             ) -> bool {
+//                 let ($( $name, )*) = self;
+//                 let mut valid = false;
+//                 $(
+//                     if let Some(phase) = $name {
+//                         valid |= phase.validate_cached_entity(visible_entity, current_change_tick);
+//                     }
+//                 )*
+//                 valid
+//             }
+//         }
+//     };
+// }
 
 macro_rules! impl_render_phase_for_tuples {
     ($($name:ident),*) => {
@@ -1582,8 +1643,8 @@ macro_rules! impl_render_phase_for_tuples {
 
 impl_render_phase_for_tuples!(A);
 impl_render_phase_for_tuples!(A, B);
-impl_render_phase_for_tuples!(A, B, C);
-impl_render_phase_for_tuples!(A, B, C, D);
+// impl_render_phase_for_tuples!(A, B, C);
+// impl_render_phase_for_tuples!(A, B, C, D);
 
 macro_rules! impl_view_render_phases_tuple {
     ($($name:ident),+) => {
@@ -1599,13 +1660,20 @@ macro_rules! impl_view_render_phases_tuple {
             #[inline]
             fn contains_key(&self, view_entity: &RetainedViewEntity) -> bool {
                 let ($($name,)+) = self;
-                false $(|| $name.contains_key(view_entity))+
+                true $(&& $name.contains_key(view_entity))+
             }
 
             #[inline]
-            fn get_mut<'a>(&'a mut self, view_entity: &RetainedViewEntity) -> Self::Phase<'a> {
+            fn get_mut<'a>(&'a mut self, view_entity: &RetainedViewEntity) -> Option<Self::Phase<'a>> {
                 let ($($name,)+) = self;
-                ($($name.get_mut(view_entity),)+)
+                Some((
+                    $(
+                        match $name.get_mut(view_entity) {
+                            Some(v) => v,
+                            None => return None,
+                        },
+                    )+
+                ))
             }
         }
     };
@@ -1613,11 +1681,11 @@ macro_rules! impl_view_render_phases_tuple {
 
 impl_view_render_phases_tuple!(A);
 impl_view_render_phases_tuple!(A, B);
-impl_view_render_phases_tuple!(A, B, C);
-impl_view_render_phases_tuple!(A, B, C, D);
+// impl_view_render_phases_tuple!(A, B, C);
+// impl_view_render_phases_tuple!(A, B, C, D);
 
 pub trait ToPhaseParam {
-    type ParamMut: ViewRenderPhases;
+    type ParamMut: ViewRenderPhases + SystemParam;
 }
 
 impl<PIE: PhaseItemExt> ToPhaseParam for PIE {
@@ -1629,7 +1697,7 @@ macro_rules! impl_to_phase_params {
         impl<$($name),+> ToPhaseParam for ($($name,)+)
         where
             $($name: ToPhaseParam,)+
-            $($name::ParamMut: ViewRenderPhases,)+
+            $($name::ParamMut: ViewRenderPhases + SystemParam,)+
             for<'a> ($(<$name::ParamMut as ViewRenderPhases>::Phase<'a>,)+): RenderPhase,
         {
             type ParamMut = ($(
@@ -1641,8 +1709,8 @@ macro_rules! impl_to_phase_params {
 
 impl_to_phase_params!(T0);
 impl_to_phase_params!(T0, T1);
-impl_to_phase_params!(T0, T1, T2);
-impl_to_phase_params!(T0, T1, T2, T3);
+// impl_to_phase_params!(T0, T1, T2);
+// impl_to_phase_params!(T0, T1, T2, T3);
 
 /// For each view, iterates over all the meshes visible from that view and adds
 /// them to [`BinnedRenderPhase`]s or [`SortedRenderPhase`]s as appropriate.
@@ -1652,16 +1720,18 @@ pub fn queue_material_meshes<P: Pass>(
     render_material_instances: Res<RenderMaterialInstances>,
     mesh_allocator: Res<MeshAllocator>,
     gpu_preprocessing_support: Res<GpuPreprocessingSupport>,
-    mut view_render_phases_tuple: <P::PhaseItems as ToPhaseParam>::ParamMut,
+    mut view_render_phases_tuple: StaticSystemParam<<P::PhaseItems as ToPhaseParam>::ParamMut>,
     views: Query<(&ExtractedView, &RenderVisibleEntities)>, // TODO: Add PhaseEntities
     specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P>>,
-) {
+) where
+    for<'w, 's> <<<P as Pass>::PhaseItems as ToPhaseParam>::ParamMut as SystemParam>::Item<'w, 's>:
+        ViewRenderPhases,
+{
     for (view, visible_entities) in &views {
-        // let Some(render_phase) = view_render_phases.get_mut(&view.retained_view_entity) else {
-        //     continue;
-        // };
-
-        let mut render_phase = view_render_phases_tuple.get_mut(&view.retained_view_entity);
+        let Some(mut render_phase) = view_render_phases_tuple.get_mut(&view.retained_view_entity)
+        else {
+            continue;
+        };
 
         let Some(view_specialized_material_pipeline_cache) =
             specialized_material_pipeline_cache.get(&view.retained_view_entity)
