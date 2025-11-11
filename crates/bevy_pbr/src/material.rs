@@ -8,6 +8,8 @@ use bevy_asset::prelude::AssetChanged;
 use bevy_asset::{Asset, AssetEventSystems, AssetId, AssetServer, UntypedAssetId};
 use bevy_camera::visibility::ViewVisibility;
 use bevy_camera::ScreenSpaceTransmissionQuality;
+use bevy_core_pipeline::deferred::{AlphaMask3dDeferred, Opaque3dDeferred};
+use bevy_core_pipeline::prepass::{AlphaMask3dPrepass, Opaque3dPrepass};
 use bevy_core_pipeline::tonemapping::Tonemapping;
 use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::change_detection::Tick;
@@ -35,7 +37,6 @@ use bevy_render::erased_render_asset::{
 };
 use bevy_render::render_asset::{prepare_assets, RenderAssets};
 use bevy_render::renderer::RenderQueue;
-use bevy_render::RenderStartup;
 use bevy_render::{
     batching::gpu_preprocessing::GpuPreprocessingSupport,
     extract_resource::ExtractResource,
@@ -49,13 +50,15 @@ use bevy_render::{
     Extract,
 };
 use bevy_render::{mesh::allocator::MeshAllocator, sync_world::MainEntityHashMap};
+use bevy_render::{render_phase, RenderStartup};
 use bevy_render::{texture::FallbackImage, view::RenderVisibleEntities};
 use bevy_shader::Shader;
-use bevy_utils::Parallel;
+use bevy_utils::{Parallel, TypeIdMap};
 use core::any::{Any, TypeId};
 use core::hash::{BuildHasher, Hasher};
 use core::{hash::Hash, marker::PhantomData};
 use smallvec::SmallVec;
+use thiserror::Error;
 use tracing::error;
 
 pub const MATERIAL_BIND_GROUP_INDEX: usize = 3;
@@ -270,7 +273,7 @@ pub trait Material: Asset + AsBindGroup + Clone + Sized {
         descriptor: &mut RenderPipelineDescriptor,
         layout: &MeshVertexBufferLayoutRef,
         key: MaterialPipelineKey<Self>,
-        pass_id: PassId,
+        // pass_id: PassId,
     ) -> Result<(), SpecializedMeshPipelineError> {
         Ok(())
     }
@@ -344,25 +347,25 @@ where
 //         app.add_plugins((PrepassPipelinePlugin, PrepassPlugin::new(self.debug_flags)));
 //         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
 //             render_app
-//                 .init_resource::<EntitySpecializationTicks>()
-//                 .init_resource::<SpecializedMaterialPipelineCache>()
-//                 .init_resource::<SpecializedMeshPipelines<PipelineSpecializer>>()
+//                 //.init_resource::<EntitySpecializationTicks>()
+//                 //.init_resource::<SpecializedMaterialPipelineCache>()
+//                 //.init_resource::<SpecializedMeshPipelines<PipelineSpecializer>>()
 //                 .init_resource::<LightKeyCache>()
 //                 .init_resource::<LightSpecializationTicks>()
 //                 .init_resource::<SpecializedShadowMaterialPipelineCache>()
 //                 .init_resource::<DrawFunctions<Shadow>>()
-//                 .init_resource::<RenderMaterialInstances>()
-//                 .init_resource::<MaterialBindGroupAllocators>()
+//                 //.init_resource::<RenderMaterialInstances>()
+//                 //.init_resource::<MaterialBindGroupAllocators>()
 //                 .add_render_command::<Shadow, DrawPrepass>()
-//                 .add_render_command::<Transmissive3d, DrawMaterial>()
-//                 .add_render_command::<Transparent3d, DrawMaterial>()
-//                 .add_render_command::<Opaque3d, DrawMaterial>()
-//                 .add_render_command::<AlphaMask3d, DrawMaterial>()
-//                 .add_systems(RenderStartup, init_material_pipeline)
+//                 //.add_render_command::<Transmissive3d, DrawMaterial>()
+//                 //.add_render_command::<Transparent3d, DrawMaterial>()
+//                 //.add_render_command::<Opaque3d, DrawMaterial>()
+//                 //.add_render_command::<AlphaMask3d, DrawMaterial>()
+//                 //.add_systems(RenderStartup, init_material_pipeline)
 //                 .add_systems(
 //                     Render,
 //                     (
-//                         specialize_material_meshes
+//                         //specialize_material_meshes
 //                             .in_set(RenderSystems::PrepareMeshes)
 //                             .after(prepare_assets::<RenderMesh>)
 //                             .after(collect_meshes_for_gpu_building)
@@ -373,8 +376,8 @@ where
 //                 .add_systems(
 //                     Render,
 //                     (
-//                         prepare_material_bind_groups,
-//                         write_material_bind_group_buffers,
+//                         //prepare_material_bind_groups,
+//                         //write_material_bind_group_buffers,
 //                     )
 //                         .chain()
 //                         .in_set(RenderSystems::PrepareBindGroups),
@@ -1313,6 +1316,9 @@ pub fn specialize_material_meshes<P: Pass, PIE: PhaseItemExt>(
             let Some(material) = render_materials.get(material_instance.asset_id) else {
                 continue;
             };
+            if !PIE::PhaseType.contains(material.properties.render_phase_type) {
+                continue;
+            }
 
             let lightmap = render_lightmaps.render_lightmaps.get(visible_entity);
 
@@ -1591,8 +1597,14 @@ pub fn queue_material_meshes<P: Pass, PIE: PhaseItemExt>(
             let Some(material) = render_materials.get(material_instance.asset_id) else {
                 continue;
             };
+            if !PIE::PhaseType.contains(material.properties.render_phase_type) {
+                continue;
+            }
 
-            let Some(draw_function) = material.properties.get_draw_function(P::id()) else {
+            let Some(draw_function) = material
+                .properties
+                .get_draw_function(MaterialDrawFunction(P::id()))
+            else {
                 continue;
             };
 
@@ -1806,10 +1818,10 @@ pub struct MaterialProperties {
     pub render_phase_type: RenderPhaseType,
     pub material_layout: Option<BindGroupLayoutDescriptor>,
     /// Backing array is a size of 4 because the `StandardMaterial` needs 4 draw functions by default
-    pub draw_functions: SmallVec<[(PassId, DrawFunctionId); 4]>,
+    pub draw_functions: SmallVec<[(InternedDrawFunctionLabel, DrawFunctionId); 4]>,
     /// Backing array is a size of 3 because the `StandardMaterial` has 3 custom shaders (`frag`, `prepass_frag`, `deferred_frag`) which is the
     /// most common use case
-    pub shaders: SmallVec<[(PassId, Handle<Shader>); 3]>,
+    pub shaders: SmallVec<[(InternedShaderLabel, Handle<Shader>); 3]>,
     /// Whether this material *actually* uses bindless resources, taking the
     /// platform support (or lack thereof) of bindless resources into account.
     pub bindless: bool,
@@ -1819,7 +1831,7 @@ pub struct MaterialProperties {
             &mut RenderPipelineDescriptor,
             &MeshVertexBufferLayoutRef,
             ErasedMaterialPipelineKey,
-            PassId,
+            // PassId,
         ) -> Result<(), SpecializedMeshPipelineError>,
     >,
     /// The key for this material, typically a bitfield of flags that are used to modify
@@ -1832,28 +1844,32 @@ pub struct MaterialProperties {
 }
 
 impl MaterialProperties {
-    pub fn get_shader(&self, pass_id: PassId) -> Option<Handle<Shader>> {
+    pub fn get_shader(&self, label: impl ShaderLabel) -> Option<Handle<Shader>> {
         self.shaders
             .iter()
-            .find(|(id, _)| *id == pass_id)
+            .find(|(inner_label, _)| inner_label == &label.intern())
             .map(|(_, shader)| shader)
             .cloned()
     }
 
-    pub fn add_shader(&mut self, pass_id: PassId, shader: Handle<Shader>) {
-        self.shaders.push((pass_id, shader));
+    pub fn add_shader(&mut self, label: impl ShaderLabel, shader: Handle<Shader>) {
+        self.shaders.push((label.intern(), shader));
     }
 
-    pub fn get_draw_function(&self, pass_id: PassId) -> Option<DrawFunctionId> {
+    pub fn get_draw_function(&self, label: impl DrawFunctionLabel) -> Option<DrawFunctionId> {
         self.draw_functions
             .iter()
-            .find(|(id, _)| *id == pass_id)
+            .find(|(inner_label, _)| inner_label == &label.intern())
             .map(|(_, shader)| shader)
             .cloned()
     }
 
-    pub fn add_draw_function(&mut self, pass_id: PassId, draw_function: DrawFunctionId) {
-        self.draw_functions.push((pass_id, draw_function));
+    pub fn add_draw_function(
+        &mut self,
+        label: impl DrawFunctionLabel,
+        draw_function: DrawFunctionId,
+    ) {
+        self.draw_functions.push((label.intern(), draw_function));
     }
 }
 
@@ -1885,22 +1901,79 @@ impl Default for RenderPhaseType {
 }
 
 impl RenderPhaseType {
-    /// Returns the number of bits defined in [`RenderPhaseType`].
+    /// Returns the count of flags defined in [`RenderPhaseType`].
     pub const fn len() -> usize {
         4
     }
 
-    /// Returns the index of the lowest bit that is set in this flag set.
-    pub fn to_index(self) -> usize {
-        self.bits().trailing_zeros() as usize
+    /// Returns the index of the current flag in [`RenderPhaseType`].
+    ///
+    /// To use this method, the flag must be set and only one flag can be set.
+    pub fn to_index(self) -> Result<usize, PhaseTypeOpError> {
+        let bits = self.bits();
+
+        // Only one bit should be set when converting to an index
+        if bits.count_ones() != 1 {
+            return Err(PhaseTypeOpError::MultiplePhaseTypes);
+        }
+
+        let index = bits.trailing_zeros() as usize;
+
+        // Make sure the index is valid
+        if 0 < index && index < Self::len() {
+            Ok(index)
+        } else {
+            Err(PhaseTypeOpError::InvalidPhaseType)
+        }
     }
 }
 
 #[derive(Resource, Deref, DerefMut)]
 pub struct PassPhaseDrawFunctions(HashMap<PassId, PhaseDrawFunctions, NoOpHash>);
 
-#[derive(Deref, DerefMut)]
-struct PhaseDrawFunctions(SmallVec<[DrawFunctionId; RenderPhaseType::len()]>);
+pub struct PhaseDrawFunctions([Option<DrawFunctionId>; RenderPhaseType::len()]);
+
+impl Default for PhaseDrawFunctions {
+    fn default() -> Self {
+        Self([None; RenderPhaseType::len()])
+    }
+}
+
+impl PhaseDrawFunctions {
+    pub fn get(&self, phase: RenderPhaseType) -> Result<Option<DrawFunctionId>, PhaseTypeOpError> {
+        let index = phase.to_index()?;
+
+        Ok(*self
+            .0
+            .get(index)
+            .expect("The index from `to_index` should always be valid."))
+    }
+
+    pub fn set(
+        &mut self,
+        phase: RenderPhaseType,
+        draw_function: DrawFunctionId,
+    ) -> Result<(), PhaseTypeOpError> {
+        let index = phase.to_index()?;
+        let draw: &mut Option<DrawFunctionId> = self
+            .0
+            .get_mut(index)
+            .expect("The index from `to_index` should always be valid.");
+
+        *draw = Some(draw_function);
+
+        Ok(())
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum PhaseTypeOpError {
+    #[error("received ")]
+    InvalidPhaseType,
+
+    #[error("received ")]
+    MultiplePhaseTypes,
+}
 
 /// A resource that maps each untyped material ID to its binding.
 ///
@@ -1934,14 +2007,11 @@ where
         // SRes<DrawFunctions<AlphaMask3d>>,
         // SRes<DrawFunctions<Transmissive3d>>,
         // SRes<DrawFunctions<Transparent3d>>,
-
-        // SRes<DrawFunctions<Opaque3dPrepass>>,
-        // SRes<DrawFunctions<AlphaMask3dPrepass>>,
-
-        // SRes<DrawFunctions<Opaque3dDeferred>>,
-        // SRes<DrawFunctions<AlphaMask3dDeferred>>,
-
-        // SRes<DrawFunctions<Shadow>>,
+        SRes<DrawFunctions<Opaque3dPrepass>>,
+        SRes<DrawFunctions<AlphaMask3dPrepass>>,
+        SRes<DrawFunctions<Opaque3dDeferred>>,
+        SRes<DrawFunctions<AlphaMask3dDeferred>>,
+        SRes<DrawFunctions<Shadow>>,
         SRes<PassPhaseDrawFunctions>,
         SRes<AssetServer>,
         M::Param,
@@ -1956,6 +2026,15 @@ where
             default_opaque_render_method,
             bind_group_allocators,
             render_material_bindings,
+            // opaque_draw_functions,
+            // alpha_mask_draw_functions,
+            // transmissive_draw_functions,
+            // transparent_draw_functions,
+            opaque_prepass_draw_functions,
+            alpha_mask_prepass_draw_functions,
+            opaque_deferred_draw_functions,
+            alpha_mask_deferred_draw_functions,
+            shadow_draw_functions,
             pass_phase_draw_functions,
             asset_server,
             material_param,
@@ -1967,17 +2046,17 @@ where
         // let draw_alpha_mask_pbr = alpha_mask_draw_functions.read().id::<DrawMaterial>();
         // let draw_transmissive_pbr = transmissive_draw_functions.read().id::<DrawMaterial>();
         // let draw_transparent_pbr = transparent_draw_functions.read().id::<DrawMaterial>();
-        // let draw_opaque_prepass = opaque_prepass_draw_functions.read().get_id::<DrawPrepass>();
-        // let draw_alpha_mask_prepass = alpha_mask_prepass_draw_functions
-        //     .read()
-        //     .get_id::<DrawPrepass>();
-        // let draw_opaque_deferred = opaque_deferred_draw_functions
-        //     .read()
-        //     .get_id::<DrawPrepass>();
-        // let draw_alpha_mask_deferred = alpha_mask_deferred_draw_functions
-        //     .read()
-        //     .get_id::<DrawPrepass>();
-        // let shadow_draw_function_id = shadow_draw_functions.read().get_id::<DrawPrepass>();
+        let draw_opaque_prepass = opaque_prepass_draw_functions.read().get_id::<DrawPrepass>();
+        let draw_alpha_mask_prepass = alpha_mask_prepass_draw_functions
+            .read()
+            .get_id::<DrawPrepass>();
+        let draw_opaque_deferred = opaque_deferred_draw_functions
+            .read()
+            .get_id::<DrawPrepass>();
+        let draw_alpha_mask_deferred = alpha_mask_deferred_draw_functions
+            .read()
+            .get_id::<DrawPrepass>();
+        let shadow_draw_function_id = shadow_draw_functions.read().get_id::<DrawPrepass>();
 
         let render_method = match material.opaque_render_method() {
             OpaqueRendererMethod::Forward => OpaqueRendererMethod::Forward,
@@ -2003,70 +2082,70 @@ where
             AlphaMode::Mask(_) => RenderPhaseType::AlphaMask,
         };
 
-        let render_phase_type_index = render_phase_type.to_index();
-
         // let draw_function_id = match render_phase_type {
         //     RenderPhaseType::Opaque => draw_opaque_pbr,
         //     RenderPhaseType::AlphaMask => draw_alpha_mask_pbr,
         //     RenderPhaseType::Transmissive => draw_transmissive_pbr,
         //     RenderPhaseType::Transparent => draw_transparent_pbr,
         // };
-        // let prepass_draw_function_id = match render_phase_type {
-        //     RenderPhaseType::Opaque => draw_opaque_prepass,
-        //     RenderPhaseType::AlphaMask => draw_alpha_mask_prepass,
-        //     _ => None,
-        // };
-        // let deferred_draw_function_id = match render_phase_type {
-        //     RenderPhaseType::Opaque => draw_opaque_deferred,
-        //     RenderPhaseType::AlphaMask => draw_alpha_mask_deferred,
-        //     _ => None,
-        // };
+        let prepass_draw_function_id = match render_phase_type {
+            RenderPhaseType::Opaque => draw_opaque_prepass,
+            RenderPhaseType::AlphaMask => draw_alpha_mask_prepass,
+            _ => None,
+        };
+        let deferred_draw_function_id = match render_phase_type {
+            RenderPhaseType::Opaque => draw_opaque_deferred,
+            RenderPhaseType::AlphaMask => draw_alpha_mask_deferred,
+            _ => None,
+        };
 
         let mut draw_functions = SmallVec::new();
         // draw_functions.push((MaterialDrawFunction.intern(), draw_function_id));
         // if let Some(prepass_draw_function_id) = prepass_draw_function_id {
         //     draw_functions.push((PrepassDrawFunction.intern(), prepass_draw_function_id));
         // }
-        // if let Some(deferred_draw_function_id) = deferred_draw_function_id {
-        //     draw_functions.push((DeferredDrawFunction.intern(), deferred_draw_function_id));
-        // }
-        // if let Some(shadow_draw_function_id) = shadow_draw_function_id {
-        //     draw_functions.push((ShadowsDrawFunction.intern(), shadow_draw_function_id));
-        // }
+        if let Some(deferred_draw_function_id) = deferred_draw_function_id {
+            draw_functions.push((DeferredDrawFunction.intern(), deferred_draw_function_id));
+        }
+        if let Some(shadow_draw_function_id) = shadow_draw_function_id {
+            draw_functions.push((ShadowsDrawFunction.intern(), shadow_draw_function_id));
+        }
 
         let mut shaders = SmallVec::new();
-        let mut add_shader = |pass_id: PassId, shader_ref: ShaderRef| {
+        let mut add_shader = |label: InternedShaderLabel, shader_ref: ShaderRef| {
             let mayber_shader = match shader_ref {
                 ShaderRef::Default => None,
                 ShaderRef::Handle(handle) => Some(handle),
                 ShaderRef::Path(path) => Some(asset_server.load(path)),
             };
             if let Some(shader) = mayber_shader {
-                shaders.push((pass_id, shader));
+                shaders.push((label, shader));
             }
         };
+
         // add_shader(MaterialVertexShader.intern(), M::vertex_shader());
         // add_shader(MaterialFragmentShader.intern(), M::fragment_shader());
-        // add_shader(PrepassVertexShader.intern(), M::prepass_vertex_shader());
-        // add_shader(PrepassFragmentShader.intern(), M::prepass_fragment_shader());
-        // add_shader(DeferredVertexShader.intern(), M::deferred_vertex_shader());
-        // add_shader(
-        //     DeferredFragmentShader.intern(),
-        //     M::deferred_fragment_shader(),
-        // );
+        add_shader(PrepassVertexShader.intern(), M::prepass_vertex_shader());
+        add_shader(PrepassFragmentShader.intern(), M::prepass_fragment_shader());
+        add_shader(DeferredVertexShader.intern(), M::deferred_vertex_shader());
+        add_shader(
+            DeferredFragmentShader.intern(),
+            M::deferred_fragment_shader(),
+        );
 
-        M::shaders()
-            .into_iter()
-            .for_each(|(pass_id, ShaderSet { vertex, fragment })| {
-                if let Some(draw) = pass_phase_draw_functions
-                    .get(&pass_id)
-                    .and_then(|functions| functions.get(render_phase_type_index))
+        for (pass_id, ShaderSet { vertex, fragment }) in M::shaders() {
+            if let Some(phase_draw_functions) = pass_phase_draw_functions.get(&pass_id) {
+                if let Some(draw_function) = phase_draw_functions
+                    .get(render_phase_type)
+                    .expect("The `render_phase_type` here should never fail.")
                 {
-                    draw_functions.push((pass_id, *draw));
-                    add_shader(pass_id, vertex);
-                    add_shader(pass_id, fragment);
-                };
-            });
+                    draw_functions.push((MaterialDrawFunction(pass_id).intern(), draw_function));
+                }
+            }
+            // Should we add shaders even if there is no draw function?
+            add_shader(MaterialVertexShader(pass_id).intern(), vertex);
+            add_shader(MaterialFragmentShader(pass_id).intern(), fragment);
+        }
 
         #[cfg(feature = "meshlet")]
         {
@@ -2092,7 +2171,7 @@ where
             descriptor: &mut RenderPipelineDescriptor,
             mesh_layout: &MeshVertexBufferLayoutRef,
             erased_key: ErasedMaterialPipelineKey,
-            pass_id: PassId,
+            // pass_id: PassId,
         ) -> Result<(), SpecializedMeshPipelineError>
         where
             M::Data: Hash + Clone,
@@ -2106,7 +2185,7 @@ where
                     mesh_key: erased_key.mesh_key,
                     bind_group_data: material_key,
                 },
-                pass_id,
+                // pass_id,
             )
         }
 

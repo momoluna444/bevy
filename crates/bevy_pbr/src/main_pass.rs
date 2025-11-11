@@ -24,8 +24,9 @@ use bevy_mesh::{BaseMeshPipelineKey, MeshVertexBufferLayoutRef};
 use bevy_render::{
     camera::TemporalJitter,
     render_phase::{
-        BinnedRenderPhase, BinnedRenderPhasePlugin, BinnedRenderPhaseType, PhaseItemExtraIndex,
-        SortedRenderPhase, SortedRenderPhasePlugin, ViewBinnedRenderPhases, ViewSortedRenderPhases,
+        AddRenderCommand, BinnedRenderPhase, BinnedRenderPhasePlugin, BinnedRenderPhaseType,
+        DrawFunctions, PhaseItemExtraIndex, SortedRenderPhase, SortedRenderPhasePlugin,
+        ViewBinnedRenderPhases, ViewSortedRenderPhases,
     },
     render_resource::{
         RenderPipelineDescriptor, SpecializedMeshPipeline, SpecializedMeshPipelineError,
@@ -36,7 +37,16 @@ use bevy_render::{
 use bevy_shader::ShaderDefVal;
 
 use crate::{
-    BinnedFamily, DistanceFog, DrawMaterial, ErasedMaterialPipelineKey, MATERIAL_BIND_GROUP_INDEX, MaterialPipeline, MaterialProperties, MeshPipeline, MeshPipelineKey, OpaqueRendererMethod, Pass, PassId, PassPlugin, PhaseFamily, PhaseItemExt, PhaseParams, PipelineSpecializer, PreparedMaterial, RenderLightmap, RenderMeshInstanceFlags, RenderPhaseType, RenderViewLightProbes, ScreenSpaceAmbientOcclusion, SortedFamily, ViewKeyCache, ViewSpecializationTicks, alpha_mode_pipeline_key, screen_space_specular_transmission_pipeline_key, tonemapping_pipeline_key
+    alpha_mode_pipeline_key, check_views_lights_need_specialization, prepare_lights, queue_shadows,
+    screen_space_specular_transmission_pipeline_key, specialize_shadows, tonemapping_pipeline_key,
+    DistanceFog, DrawMaterial, DrawPrepass, ErasedMaterialPipelineKey, LightKeyCache,
+    LightSpecializationTicks, MaterialFragmentShader, MaterialPipeline, MaterialProperties,
+    MaterialVertexShader, MeshPipeline, MeshPipelineKey, OpaqueRendererMethod, Pass, PassId,
+    PassPlugin, PhaseItemExt, PhaseParams, PipelineSpecializer, PreparedMaterial,
+    PrepassPipelinePlugin, PrepassPlugin, RenderLightmap, RenderMeshInstanceFlags, RenderPhaseType,
+    RenderViewLightProbes, ScreenSpaceAmbientOcclusion, Shadow,
+    SpecializedShadowMaterialPipelineCache, ViewKeyCache, ViewSpecializationTicks,
+    MATERIAL_BIND_GROUP_INDEX,
 };
 
 #[derive(Default)]
@@ -46,13 +56,35 @@ pub struct MainPassPlugin {
 impl Plugin for MainPassPlugin {
     fn build(&self, app: &mut bevy_app::App) {
         app.add_plugins(PassPlugin::<MainPass>::new(self.debug_flags));
+        app.add_plugins((PrepassPipelinePlugin, PrepassPlugin::new(self.debug_flags)));
 
-        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app.add_systems(
+        let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
+            return;
+        };
+
+        render_app
+            .init_resource::<LightKeyCache>()
+            .init_resource::<LightSpecializationTicks>()
+            .init_resource::<SpecializedShadowMaterialPipelineCache>()
+            .init_resource::<DrawFunctions<Shadow>>()
+            .add_render_command::<Shadow, DrawPrepass>()
+            .add_systems(
                 Render,
-                check_views_need_specialization::<MainPass>.in_set(RenderSystems::PrepareAssets),
+                (
+                    check_views_lights_need_specialization.in_set(RenderSystems::PrepareAssets),
+                    // specialize_shadows also needs to run after prepare_assets::<PreparedMaterial>,
+                    // which is fine since ManageViews is after PrepareAssets
+                    specialize_shadows
+                        .in_set(RenderSystems::ManageViews)
+                        .after(prepare_lights),
+                    queue_shadows.in_set(RenderSystems::QueueMeshes),
+                ),
             );
-        }
+
+        render_app.add_systems(
+            Render,
+            check_views_need_specialization::<MainPass>.in_set(RenderSystems::PrepareAssets),
+        );
     }
 }
 
@@ -290,11 +322,17 @@ impl SpecializedMeshPipeline for MaterialPipelineSpecializer {
                 MATERIAL_BIND_GROUP_INDEX as u32,
             ));
         };
-        if let Some(vertex_shader) = self.properties.get_shader(self.pass_id) {
+        if let Some(vertex_shader) = self
+            .properties
+            .get_shader(MaterialVertexShader(self.pass_id))
+        {
             descriptor.vertex.shader = vertex_shader.clone();
         }
 
-        if let Some(fragment_shader) = self.properties.get_shader(self.pass_id) {
+        if let Some(fragment_shader) = self
+            .properties
+            .get_shader(MaterialFragmentShader(self.pass_id))
+        {
             descriptor.fragment.as_mut().unwrap().shader = fragment_shader.clone();
         }
 
@@ -303,7 +341,7 @@ impl SpecializedMeshPipeline for MaterialPipelineSpecializer {
             .insert(3, self.properties.material_layout.as_ref().unwrap().clone());
 
         if let Some(specialize) = self.properties.specialize {
-            specialize(&self.pipeline, &mut descriptor, layout, key, self.pass_id)?;
+            specialize(&self.pipeline, &mut descriptor, layout, key)?; // self.pass_id
         }
 
         // If bindless mode is on, add a `BINDLESS` define.

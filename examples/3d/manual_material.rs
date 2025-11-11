@@ -4,34 +4,17 @@ use bevy::{
     asset::{AsAssetId, AssetEventSystems},
     core_pipeline::core_3d::Opaque3d,
     ecs::system::{
-        lifetimeless::{SRes, SResMut},
-        SystemChangeTick, SystemParamItem,
+        SystemChangeTick, SystemParamItem, lifetimeless::{SRes, SResMut}
     },
     pbr::{
-        late_sweep_material_instances, DrawMaterial, EntitiesNeedingSpecialization,
-        EntitySpecializationTickPair, EntitySpecializationTicks, MaterialBindGroupAllocator,
-        MaterialBindGroupAllocators, MaterialDrawFunction,
-        MaterialExtractEntitiesNeedingSpecializationSystems, MaterialExtractionSystems,
-        MaterialFragmentShader, MaterialProperties, PreparedMaterial, RenderMaterialBindings,
-        RenderMaterialInstance, RenderMaterialInstances, SpecializedMaterialPipelineCache,
+        DrawMaterial, EntitiesNeedingSpecialization, EntitySpecializationTickPair, EntitySpecializationTicks, MainPass, MaterialBindGroupAllocator, MaterialBindGroupAllocators, MaterialDrawFunction, MaterialExtractEntitiesNeedingSpecializationSystems, MaterialExtractionSystems, MaterialFragmentShader, MaterialProperties, Pass, PreparedMaterial, RenderMaterialBindings, RenderMaterialInstance, RenderMaterialInstances, SpecializedMaterialPipelineCache, late_sweep_material_instances
     },
     platform::collections::hash_map::Entry,
     prelude::*,
     render::{
-        erased_render_asset::{ErasedRenderAsset, ErasedRenderAssetPlugin, PrepareAssetError},
-        render_asset::RenderAssets,
-        render_phase::DrawFunctions,
-        render_resource::{
-            binding_types::{sampler, texture_2d},
-            AsBindGroup, BindGroupLayoutDescriptor, BindGroupLayoutEntries, BindingResources,
-            OwnedBindingResource, Sampler, SamplerBindingType, SamplerDescriptor, ShaderStages,
-            TextureSampleType, TextureViewDimension, UnpreparedBindGroup,
-        },
-        renderer::RenderDevice,
-        sync_world::MainEntity,
-        texture::GpuImage,
-        view::ExtractedView,
-        Extract, RenderApp, RenderStartup,
+        Extract, RenderApp, RenderStartup, erased_render_asset::{ErasedRenderAsset, ErasedRenderAssetPlugin, PrepareAssetError}, render_asset::RenderAssets, render_phase::DrawFunctions, render_resource::{
+            AsBindGroup, BindGroupLayoutDescriptor, BindGroupLayoutEntries, BindingResources, OwnedBindingResource, Sampler, SamplerBindingType, SamplerDescriptor, ShaderStages, TextureSampleType, TextureViewDimension, UnpreparedBindGroup, binding_types::{sampler, texture_2d}
+        }, renderer::RenderDevice, sync_world::MainEntity, texture::GpuImage, view::ExtractedView
     },
     utils::Parallel,
 };
@@ -200,8 +183,8 @@ impl ErasedRenderAsset for ImageMaterial {
             material_layout: Some(material_layout),
             ..Default::default()
         };
-        properties.add_draw_function(MaterialDrawFunction, draw_function_id);
-        properties.add_shader(MaterialFragmentShader, asset_server.load(SHADER_ASSET_PATH));
+        properties.add_draw_function(MaterialDrawFunction(MainPass::id()), draw_function_id);
+        properties.add_shader(MaterialFragmentShader(MainPass::id()), asset_server.load(SHADER_ASSET_PATH));
 
         Ok(PreparedMaterial {
             binding,
@@ -297,7 +280,7 @@ fn extract_image_materials_needing_specialization(
     entities_needing_specialization: Extract<Res<EntitiesNeedingSpecialization<ImageMaterial>>>,
     mut entity_specialization_ticks: ResMut<EntitySpecializationTicks>,
     mut removed_mesh_material_components: Extract<RemovedComponents<ImageMaterial3d>>,
-    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache>,
+    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<MainPass, Opaque3d>>,
     render_material_instances: Res<RenderMaterialInstances>,
     views: Query<&ExtractedView>,
     ticks: SystemChangeTick,
@@ -331,7 +314,7 @@ fn extract_image_materials_needing_specialization(
 fn sweep_image_materials_needing_specialization(
     mut entity_specialization_ticks: ResMut<EntitySpecializationTicks>,
     mut removed_mesh_material_components: Extract<RemovedComponents<ImageMaterial3d>>,
-    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache>,
+    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<MainPass, Opaque3d>>,
     render_material_instances: Res<RenderMaterialInstances>,
     views: Query<&ExtractedView>,
 ) {

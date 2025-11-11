@@ -1,9 +1,9 @@
 use crate::{
     DrawMesh, MeshPipeline, MeshPipelineKey, RenderMeshInstanceFlags, RenderMeshInstances,
     SetMeshBindGroup, SetMeshViewBindGroup, SetMeshViewBindingArrayBindGroup, ViewKeyCache,
-    ViewSpecializationTicks,
+    ViewSpecializationTicks, main_pass::MainPass,
 };
-use bevy_app::{App, Plugin, PostUpdate, Startup, Update};
+use bevy_app::{App, Main, Plugin, PostUpdate, Startup, Update};
 use bevy_asset::{
     embedded_asset, load_embedded_asset, prelude::AssetChanged, AsAssetId, Asset, AssetApp,
     AssetEventSystems, AssetId, AssetServer, Assets, Handle, UntypedAssetId,
@@ -750,9 +750,9 @@ pub fn specialize_wireframes(
     render_visibility_ranges: Res<RenderVisibilityRanges>,
     wireframe_phases: Res<ViewBinnedRenderPhases<Wireframe3d>>,
     views: Query<(&ExtractedView, &RenderVisibleEntities)>,
-    view_key_cache: Res<ViewKeyCache>,
+    view_key_cache: Res<ViewKeyCache<MainPass>>,
     entity_specialization_ticks: Res<WireframeEntitySpecializationTicks>,
-    view_specialization_ticks: Res<ViewSpecializationTicks>,
+    view_specialization_ticks: Res<ViewSpecializationTicks<MainPass>>,
     mut specialized_material_pipeline_cache: ResMut<SpecializedWireframePipelineCache>,
     mut pipelines: ResMut<SpecializedMeshPipelines<Wireframe3dPipeline>>,
     pipeline: Res<Wireframe3dPipeline>,

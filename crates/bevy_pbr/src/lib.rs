@@ -64,6 +64,7 @@ pub use light_probe::*;
 pub use lightmap::*;
 pub use material::*;
 pub use material_bind_groups::*;
+pub use main_pass::*;
 pub use medium::*;
 pub use mesh_material::*;
 pub use parallax::*;
@@ -127,7 +128,7 @@ pub mod graph {
     }
 }
 
-use crate::{deferred::DeferredPbrLightingPlugin, graph::NodePbr};
+use crate::{deferred::DeferredPbrLightingPlugin, graph::NodePbr, main_pass::MainPassPlugin};
 use bevy_app::prelude::*;
 use bevy_asset::{AssetApp, AssetPath, Assets, Handle, RenderAssetUsages};
 use bevy_core_pipeline::core_3d::graph::{Core3d, Node3d};
@@ -223,7 +224,7 @@ impl Plugin for PbrPlugin {
                     use_gpu_instance_buffer_builder: self.use_gpu_instance_buffer_builder,
                     debug_flags: self.debug_flags,
                 },
-                MaterialsPlugin {
+                MainPassPlugin {
                     debug_flags: self.debug_flags,
                 },
                 MaterialPlugin::<StandardMaterial> {
