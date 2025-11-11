@@ -153,16 +153,16 @@ impl Plugin for MeshRenderPlugin {
         app.add_systems(
             PostUpdate,
             (no_automatic_skin_batching, no_automatic_morph_batching),
-        );
-        // .add_plugins((
+        )
+        .add_plugins((
         //     BinnedRenderPhasePlugin::<Opaque3d, MeshPipeline>::new(self.debug_flags),
         //     BinnedRenderPhasePlugin::<AlphaMask3d, MeshPipeline>::new(self.debug_flags),
-        //     BinnedRenderPhasePlugin::<Shadow, MeshPipeline>::new(self.debug_flags),
-        //     BinnedRenderPhasePlugin::<Opaque3dDeferred, MeshPipeline>::new(self.debug_flags),
-        //     BinnedRenderPhasePlugin::<AlphaMask3dDeferred, MeshPipeline>::new(self.debug_flags),
-        //     SortedRenderPhasePlugin::<Transmissive3d, MeshPipeline>::new(self.debug_flags),
+            BinnedRenderPhasePlugin::<Shadow, MeshPipeline>::new(self.debug_flags),
+            BinnedRenderPhasePlugin::<Opaque3dDeferred, MeshPipeline>::new(self.debug_flags),
+            BinnedRenderPhasePlugin::<AlphaMask3dDeferred, MeshPipeline>::new(self.debug_flags),
+            // SortedRenderPhasePlugin::<Transmissive3d, MeshPipeline>::new(self.debug_flags),
         //     SortedRenderPhasePlugin::<Transparent3d, MeshPipeline>::new(self.debug_flags),
-        // ));
+        ));
 
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app

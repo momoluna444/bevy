@@ -62,6 +62,12 @@ impl Plugin for MainPassPlugin {
             return;
         };
 
+        render_app.add_systems(
+            Render,
+            check_views_need_specialization::<MainPass>.in_set(RenderSystems::PrepareAssets),
+        );
+
+        // This part is for Shadow, maybe we can move it to a separate plugin
         render_app
             .init_resource::<LightKeyCache>()
             .init_resource::<LightSpecializationTicks>()
@@ -80,11 +86,6 @@ impl Plugin for MainPassPlugin {
                     queue_shadows.in_set(RenderSystems::QueueMeshes),
                 ),
             );
-
-        render_app.add_systems(
-            Render,
-            check_views_need_specialization::<MainPass>.in_set(RenderSystems::PrepareAssets),
-        );
     }
 }
 
@@ -357,9 +358,10 @@ impl SpecializedMeshPipeline for MaterialPipelineSpecializer {
 }
 
 impl PhaseItemExt for Opaque3d {
-    type Family = BinnedFamily;
-
-    const PhaseType: RenderPhaseType = RenderPhaseType::Opaque;
+    type Phase = BinnedRenderPhase<Self>;
+    type Phases = ViewBinnedRenderPhases<Self>;
+    type Plugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
+    const PHASE_TYPES: RenderPhaseType = RenderPhaseType::Opaque;
 
     fn queue(render_phase: &mut <Self::Family as PhaseFamily>::Phase, params: &PhaseParams) {
         if params.material.properties.render_method == OpaqueRendererMethod::Deferred {
@@ -402,8 +404,10 @@ impl PhaseItemExt for Opaque3d {
 }
 
 impl PhaseItemExt for AlphaMask3d {
-    type Family = BinnedFamily;
-    const PhaseType: RenderPhaseType = RenderPhaseType::AlphaMask;
+    type Phase = BinnedRenderPhase<Self>;
+    type Phases = ViewBinnedRenderPhases<Self>;
+    type Plugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
+    const PHASE_TYPES: RenderPhaseType = RenderPhaseType::AlphaMask;
 
     fn queue(render_phase: &mut Self::Phase, params: &PhaseParams) {
         let (vertex_slab, index_slab) = params
@@ -433,9 +437,10 @@ impl PhaseItemExt for AlphaMask3d {
 }
 
 impl PhaseItemExt for Transmissive3d {
-    type Family = SortedFamily;
-
-    const PhaseType: RenderPhaseType = RenderPhaseType::Transmissive;
+    type Phase = SortedRenderPhase<Self>;
+    type Phases = ViewSortedRenderPhases<Self>;
+    type Plugin = SortedRenderPhasePlugin<Self, MeshPipeline>;
+    const PHASE_TYPES: RenderPhaseType = RenderPhaseType::Transmissive;
 
     fn queue(render_phase: &mut Self::Phase, params: &PhaseParams) {
         let (_, index_slab) = params
@@ -459,9 +464,10 @@ impl PhaseItemExt for Transmissive3d {
 }
 
 impl PhaseItemExt for Transparent3d {
-    type Family = SortedFamily;
-
-    const PhaseType: RenderPhaseType = RenderPhaseType::Transparent;
+    type Phase = SortedRenderPhase<Self>;
+    type Phases = ViewSortedRenderPhases<Self>;
+    type Plugin = SortedRenderPhasePlugin<Self, MeshPipeline>;
+    const PHASE_TYPES: RenderPhaseType = RenderPhaseType::Transparent;
 
     fn queue(render_phase: &mut Self::Phase, params: &PhaseParams) {
         let (_, index_slab) = params
