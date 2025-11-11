@@ -479,7 +479,7 @@ where
 {
     fn build(&self, app: &mut App) {
         // NOTE: The resource `PIE::Phases` is indirectly initialized `by PIE::Plugin`.
-        app.add_plugins(<PIE::Family as PhaseFamily<PIE>>::Plugin::new(self.debug_flags));
+        app.add_plugins(PIE::Plugin::new(self.debug_flags));
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -1269,7 +1269,7 @@ pub fn specialize_material_meshes<P: Pass, PIE: PhaseItemExt>(
     render_material_instances: Res<RenderMaterialInstances>,
     render_lightmaps: Res<RenderLightmaps>, //TODO: make this public
     render_visibility_ranges: Res<RenderVisibilityRanges>,
-    view_render_phases: Res<<PIE::Family as PhaseFamily<PIE>>::Phases>,
+    view_render_phases: Res<PIE::Phases>,
     views: Query<(&ExtractedView, &RenderVisibleEntities)>,
     view_key_cache: Res<ViewKeyCache<P>>,
     entity_specialization_ticks: Res<EntitySpecializationTicks>,
@@ -1423,34 +1423,6 @@ where
 //     type Plugin = BinnedRenderPhasePlugin<BPI, GFBD>;
 // }
 
-pub trait PhaseFamily<PI> {
-    type Phase: RenderPhase;
-    type Phases: ViewRenderPhases + Resource;
-    type Plugin<GFBD: GetFullBatchData + Sync + Send + 'static>: RenderPhasePlugin + Plugin;
-}
-
-pub struct BinnedFamily;
-
-impl<PI> PhaseFamily<PI> for BinnedFamily
-where
-    PI: BinnedPhaseItem + PhaseItemExt<Family = Self>,
-{
-    type Phase = BinnedRenderPhase<PI>;
-    type Phases = ViewBinnedRenderPhases<PI>;
-    type Plugin<GFBD: GetFullBatchData + Sync + Send + 'static> = BinnedRenderPhasePlugin<PI, GFBD>;
-}
-
-pub struct SortedFamily;
-
-impl<PI> PhaseFamily<PI> for SortedFamily
-where
-    PI: SortedPhaseItem + PhaseItemExt<Family = Self>,
-{
-    type Phase = SortedRenderPhase<PI>;
-    type Phases = ViewSortedRenderPhases<PI>;
-    type Plugin<GFBD: GetFullBatchData + Sync + Send + 'static> = SortedRenderPhasePlugin<PI, GFBD>;
-}
-
 pub struct PhaseParams<'a> {
     pub mesh_instance: &'a RenderMeshQueueData<'a>,
     pub material: &'a PreparedMaterial,
@@ -1465,14 +1437,13 @@ pub struct PhaseParams<'a> {
 }
 
 pub trait PhaseItemExt: PhaseItem {
-    // type Phase: RenderPhase;
-    // type Phases: ViewRenderPhases + Resource;
-    // type Plugin: RenderPhasePlugin + Plugin;
-    type Family: PhaseFamily<Self>;
+    type Phase: RenderPhase;
+    type Phases: ViewRenderPhases + Resource;
+    type Plugin: RenderPhasePlugin + Plugin;
 
     const PHASE_TYPES: RenderPhaseType;
 
-    fn queue(render_phase: &mut <Self::Family as PhaseFamily<Self>>::Phase, params: &PhaseParams);
+    fn queue(render_phase: &mut Self::Phase, params: &PhaseParams);
 }
 
 pub trait RenderPhase {
@@ -1496,7 +1467,7 @@ pub trait ViewRenderPhases {
 
 impl<BPI> RenderPhase for BinnedRenderPhase<BPI>
 where
-    BPI: BinnedPhaseItem + PhaseItemExt<Family = BinnedFamily>,
+    BPI: BinnedPhaseItem + PhaseItemExt<Phase = BinnedRenderPhase<BPI>>,
 {
     #[inline]
     fn add(&mut self, params: &PhaseParams) {
@@ -1515,7 +1486,7 @@ where
 
 impl<SPI> RenderPhase for SortedRenderPhase<SPI>
 where
-    SPI: SortedPhaseItem + PhaseItemExt<Family = SortedFamily>,
+    SPI: SortedPhaseItem + PhaseItemExt<Phase = SortedRenderPhase<SPI>>,
 {
     #[inline]
     fn add(&mut self, params: &PhaseParams) {
@@ -1534,7 +1505,7 @@ where
 
 impl<BPI> ViewRenderPhases for ViewBinnedRenderPhases<BPI>
 where
-    BPI: BinnedPhaseItem + PhaseItemExt<Family = BinnedFamily>,
+    BPI: BinnedPhaseItem + PhaseItemExt<Phase = BinnedRenderPhase<BPI>>,
 {
     type Phase = BinnedRenderPhase<BPI>;
 
@@ -1551,7 +1522,7 @@ where
 
 impl<SPI> ViewRenderPhases for ViewSortedRenderPhases<SPI>
 where
-    SPI: SortedPhaseItem + PhaseItemExt<Family = SortedFamily>,
+    SPI: SortedPhaseItem + PhaseItemExt<Phase = SortedRenderPhase<SPI>>,
 {
     type Phase = SortedRenderPhase<SPI>;
 
@@ -1574,7 +1545,7 @@ pub fn queue_material_meshes<P: Pass, PIE: PhaseItemExt>(
     render_material_instances: Res<RenderMaterialInstances>,
     mesh_allocator: Res<MeshAllocator>,
     gpu_preprocessing_support: Res<GpuPreprocessingSupport>,
-    mut view_render_phases: ResMut<<PIE::Family as PhaseFamily<PIE>>::Phases>,
+    mut view_render_phases: ResMut<PIE::Phases>,
     views: Query<(&ExtractedView, &RenderVisibleEntities)>, // TODO: Add PhaseEntities
     specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P, PIE>>,
 ) {

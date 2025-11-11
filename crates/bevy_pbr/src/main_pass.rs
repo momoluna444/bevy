@@ -363,7 +363,7 @@ impl PhaseItemExt for Opaque3d {
     type Plugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
     const PHASE_TYPES: RenderPhaseType = RenderPhaseType::Opaque;
 
-    fn queue(render_phase: &mut <Self::Family as PhaseFamily>::Phase, params: &PhaseParams) {
+    fn queue(render_phase: &mut Self::Phase, params: &PhaseParams) {
         if params.material.properties.render_method == OpaqueRendererMethod::Deferred {
             // Even though we aren't going to insert the entity into
             // a bin, we still want to update its cache entry. That
