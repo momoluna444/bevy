@@ -23,6 +23,7 @@ use bevy_light::{EnvironmentMapLight, IrradianceVolume, ShadowFilteringMethod};
 use bevy_mesh::{BaseMeshPipelineKey, MeshVertexBufferLayoutRef};
 use bevy_render::{
     camera::TemporalJitter,
+    extract_component::ExtractComponent,
     render_phase::{
         AddRenderCommand, BinnedRenderPhase, BinnedRenderPhasePlugin, BinnedRenderPhaseType,
         DrawFunctions, PhaseItemExtraIndex, SortedRenderPhase, SortedRenderPhasePlugin,
@@ -55,8 +56,9 @@ pub struct MainPassPlugin {
 }
 impl Plugin for MainPassPlugin {
     fn build(&self, app: &mut bevy_app::App) {
-        app.add_plugins(PassPlugin::<MainPass>::new(self.debug_flags));
-        app.add_plugins((PrepassPipelinePlugin, PrepassPlugin::new(self.debug_flags)));
+        app.register_required_components::<Camera3d, MainPass>()
+            .add_plugins(PassPlugin::<MainPass>::new(self.debug_flags))
+            .add_plugins((PrepassPipelinePlugin, PrepassPlugin::new(self.debug_flags)));
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -89,10 +91,12 @@ impl Plugin for MainPassPlugin {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Component)]
+#[derive(Clone, Copy, Default, Component, ExtractComponent)]
 pub struct MainPass;
 
 impl Pass for MainPass {
+    type ViewKeyCacheSource = Self;
+
     type Specializer = MaterialPipelineSpecializer;
 
     type PhaseItems = (Opaque3d, AlphaMask3d, Transmissive3d, Transparent3d);
@@ -104,29 +108,32 @@ impl Pass for MainPass {
 pub fn check_views_need_specialization<P: Pass>(
     mut view_key_cache: ResMut<ViewKeyCache<P>>,
     mut view_specialization_ticks: ResMut<ViewSpecializationTicks<P>>,
-    mut views: Query<(
-        &ExtractedView,
-        &Msaa,
-        Option<&Tonemapping>,
-        Option<&DebandDither>,
-        Option<&ShadowFilteringMethod>,
-        Has<ScreenSpaceAmbientOcclusion>,
+    mut views: Query<
         (
-            Has<NormalPrepass>,
-            Has<DepthPrepass>,
-            Has<MotionVectorPrepass>,
-            Has<DeferredPrepass>,
+            &ExtractedView,
+            &Msaa,
+            Option<&Tonemapping>,
+            Option<&DebandDither>,
+            Option<&ShadowFilteringMethod>,
+            Has<ScreenSpaceAmbientOcclusion>,
+            (
+                Has<NormalPrepass>,
+                Has<DepthPrepass>,
+                Has<MotionVectorPrepass>,
+                Has<DeferredPrepass>,
+            ),
+            Option<&Camera3d>,
+            Has<TemporalJitter>,
+            Option<&Projection>,
+            Has<DistanceFog>,
+            (
+                Has<RenderViewLightProbes<EnvironmentMapLight>>,
+                Has<RenderViewLightProbes<IrradianceVolume>>,
+            ),
+            Has<OrderIndependentTransparencySettings>,
         ),
-        Option<&Camera3d>,
-        Has<TemporalJitter>,
-        Option<&Projection>,
-        Has<DistanceFog>,
-        (
-            Has<RenderViewLightProbes<EnvironmentMapLight>>,
-            Has<RenderViewLightProbes<IrradianceVolume>>,
-        ),
-        Has<OrderIndependentTransparencySettings>,
-    )>,
+        With<P>,
+    >,
     ticks: SystemChangeTick,
 ) {
     for (
@@ -295,10 +302,6 @@ impl PipelineSpecializer for MaterialPipelineSpecializer {
             type_id,
         })
     }
-
-    fn pass_id(&self) -> PassId {
-        self.pass_id
-    }
 }
 
 impl SpecializedMeshPipeline for MaterialPipelineSpecializer {
@@ -342,7 +345,7 @@ impl SpecializedMeshPipeline for MaterialPipelineSpecializer {
             .insert(3, self.properties.material_layout.as_ref().unwrap().clone());
 
         if let Some(specialize) = self.properties.specialize {
-            specialize(&self.pipeline, &mut descriptor, layout, key)?; // self.pass_id
+            specialize(&self.pipeline, &mut descriptor, layout, key)?; // , self.pass_id)?;
         }
 
         // If bindless mode is on, add a `BINDLESS` define.
