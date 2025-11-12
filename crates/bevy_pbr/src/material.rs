@@ -322,11 +322,11 @@ where
     type Specializer: PipelineSpecializer;
 
     /// The [`PhaseItem`]s processed by this pass.
-    /// 
+    ///
     /// Each `PhaseItem` must implement [`PhaseItemExt`].
     /// Currently, the maximum number of `PhaseItem`s in a pass is 4.
-    /// 
-    /// # Example
+    ///
+    /// ## Example
     /// ```
     /// type PhaseItems = (Opaque3d, AlphaMask3d, Transmissive3d, Transparent3d);
     /// ```
@@ -346,9 +346,13 @@ where
     }
 }
 
+// Fake singleton for [`PassPlugin`]
 #[derive(Resource, Default)]
 struct PassPluginLoaded;
 
+/// A plugin for adding a [`Pass`] that can be used by [`Material`].
+///
+/// Currently handles the specialization and queueing stages.
 #[derive(Default)]
 pub struct PassPlugin<P> {
     pub debug_flags: RenderDebugFlags,
@@ -368,7 +372,6 @@ impl<P: Pass> Plugin for PassPlugin<P> {
     fn build(&self, app: &mut App) {
         // This is equivalent to: app.add_plugins((PassPhasePlugin::<Pass, Opaque3d>::new(), ...));
         P::PhaseItems::add_plugins(app, self.debug_flags);
-
         app.add_plugins(ExtractComponentPlugin::<P>::default());
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
@@ -421,7 +424,7 @@ where
     <P::RenderCommand as RenderCommand<PIE>>::Param: ReadOnlySystemParam,
 {
     fn build(&self, app: &mut App) {
-        // NOTE: The resource `PIE::Phases` is indirectly initialized `by PIE::Plugin`.
+        // NOTE: The resource `PIE::Phases` (ViewRenderPhases) is indirectly initialized `by PIE::Plugin` (RenderPhasePlugin).
         app.add_plugins(PIE::Plugin::new(self.debug_flags));
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
@@ -435,7 +438,7 @@ where
             .init_resource::<PassPhaseDrawFunctions>()
             .init_resource::<DrawFunctions<PIE>>()
             .add_render_command::<PIE, P::RenderCommand>()
-            .add_systems(RenderStartup, init_pass_phase_draw_functions::<P, PIE>)
+            .add_systems(RenderStartup, insert_pass_phase_draw_functions::<P, PIE>)
             .add_systems(
                 ExtractSchedule,
                 late_sweep_entities_needing_specialization::<P, PIE>
@@ -456,6 +459,7 @@ where
     }
 }
 
+/// A trait for converting a tuple of [`PhaseItem`]s into [`PassPhasePlugin`]s and adding them to the app.
 pub trait ToPhasePlugins<P> {
     fn add_plugins(app: &mut App, debug_flags: RenderDebugFlags);
 }
@@ -635,14 +639,17 @@ pub fn init_material_pipeline(mut commands: Commands, mesh_pipeline: Res<MeshPip
     });
 }
 
-pub fn init_pass_phase_draw_functions<P: Pass, PIE: PhaseItemExt>(
+/// Inserts `PhaseItem`'s `DrawFunction`s into [`PassPhaseDrawFunctions`] by their [`RenderPhaseType`].
+///
+/// This should be called per `PhaseItem`, and the corresponding `RenderCommand` should be registered before calling this.
+pub fn insert_pass_phase_draw_functions<P: Pass, PIE: PhaseItemExt>(
     mut pass_phase_draw_functions: ResMut<PassPhaseDrawFunctions>,
     draw_functions: Res<DrawFunctions<PIE>>,
 ) {
     let draw_function_id = draw_functions
         .read()
         .get_id::<P::RenderCommand>()
-        .expect("DrawFunctionId not found for P::RenderCommand. Call `add_draw_function` to register it first.");
+        .expect("DrawFunctionId not found for the pass's RenderCommand. Call `add_draw_function` to register it first.");
     PIE::PHASE_TYPES.iter().for_each(|phase_type| {
         let _ = pass_phase_draw_functions
             .entry(P::id())
@@ -651,6 +658,7 @@ pub fn init_pass_phase_draw_functions<P: Pass, PIE: PhaseItemExt>(
     });
 }
 
+/// A [`RenderCommand`] for [`MainPass`].
 pub type DrawMaterial = (
     SetItemPipeline,
     SetMeshViewBindGroup<0>,
@@ -820,6 +828,21 @@ pub const fn screen_space_specular_transmission_pipeline_key(
             MeshPipelineKey::SCREEN_SPACE_SPECULAR_TRANSMISSION_ULTRA
         }
     }
+}
+
+pub const fn alpha_mode_render_phase_type(
+    alpha_mode: AlphaMode,
+    reads_view_transmission_texture: bool,
+) -> RenderPhaseType {
+    let render_phase_type = match alpha_mode {
+        AlphaMode::Blend | AlphaMode::Premultiplied | AlphaMode::Add | AlphaMode::Multiply => {
+            RenderPhaseType::Transparent
+        }
+        _ if reads_view_transmission_texture => RenderPhaseType::Transmissive,
+        AlphaMode::Opaque | AlphaMode::AlphaToCoverage => RenderPhaseType::Opaque,
+        AlphaMode::Mask(_) => RenderPhaseType::AlphaMask,
+    };
+    render_phase_type
 }
 
 /// A system that ensures that
@@ -2003,14 +2026,8 @@ where
         let reads_view_transmission_texture =
             mesh_pipeline_key_bits.contains(MeshPipelineKey::READS_VIEW_TRANSMISSION_TEXTURE);
 
-        let render_phase_type = match material.alpha_mode() {
-            AlphaMode::Blend | AlphaMode::Premultiplied | AlphaMode::Add | AlphaMode::Multiply => {
-                RenderPhaseType::Transparent
-            }
-            _ if reads_view_transmission_texture => RenderPhaseType::Transmissive,
-            AlphaMode::Opaque | AlphaMode::AlphaToCoverage => RenderPhaseType::Opaque,
-            AlphaMode::Mask(_) => RenderPhaseType::AlphaMask,
-        };
+        let render_phase_type =
+            alpha_mode_render_phase_type(material.alpha_mode(), reads_view_transmission_texture);
 
         // let draw_function_id = match render_phase_type {
         //     RenderPhaseType::Opaque => draw_opaque_pbr,
