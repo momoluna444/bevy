@@ -330,7 +330,7 @@ where
     /// ```
     /// type PhaseItems = (Opaque3d, AlphaMask3d, Transmissive3d, Transparent3d);
     /// ```
-    type PhaseItems: ToPhasePlugins<Self>;
+    type PhaseItems: PhaseItems;
 
     // NOTE: Theoretically, the relationship between PhaseItem and RenderCommand
     // is many-to-many, but I haven't seen many use cases of this. For simplicity
@@ -459,49 +459,127 @@ where
     }
 }
 
-/// A trait for converting a tuple of [`PhaseItem`]s into [`PassPhasePlugin`]s and adding them to the app.
-pub trait ToPhasePlugins<P> {
-    fn add_plugins(app: &mut App, debug_flags: RenderDebugFlags);
-}
+mod private {
+    use std::ops::Range;
 
-// For a single item
-impl<P, PIE> ToPhasePlugins<P> for PIE
-where
-    P: Pass,
-    P::RenderCommand: RenderCommand<PIE>,
-    <P::RenderCommand as RenderCommand<PIE>>::Param: ReadOnlySystemParam,
-    PIE: PhaseItemExt,
-{
-    fn add_plugins(app: &mut App, debug_flags: RenderDebugFlags) {
-        app.add_plugins(PassPhasePlugin::<P, PIE>::new(debug_flags));
+    use bevy_core_pipeline::core_3d::{Opaque3dBatchSetKey, Opaque3dBinKey};
+    use bevy_ecs::entity::Entity;
+    use bevy_render::{
+        render_phase::{
+            BinnedPhaseItem, BinnedRenderPhase, BinnedRenderPhasePlugin, DrawFunctionId, PhaseItem,
+            PhaseItemExtraIndex, ViewBinnedRenderPhases,
+        },
+        sync_world::MainEntity,
+    };
+
+    use crate::{MeshPipeline, PhaseItemExt, RenderPhaseType};
+
+    pub(super) struct PlaceHolder;
+
+    impl PhaseItemExt for PlaceHolder {
+        const PHASE_TYPES: RenderPhaseType = RenderPhaseType::empty();
+        type Phase = BinnedRenderPhase<Self>;
+        type Phases = ViewBinnedRenderPhases<Self>;
+        type Plugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
+
+        fn queue(render_phase: &mut Self::Phase, params: &super::PhaseParams) {
+            todo!()
+        }
     }
-}
 
-// For multiple items
-macro_rules! impl_to_phase_plugins {
-    ($($T:ident),+) => {
-        impl<P, $($T),*> ToPhasePlugins<P> for ($($T,)+)
-        where
-            P: Pass,
-            $(P::RenderCommand: RenderCommand<$T>,)+
-            $(<P::RenderCommand as RenderCommand<$T>>::Param: ReadOnlySystemParam,)+
-            $($T: PhaseItemExt),+
-        {
-            fn add_plugins(app: &mut App, debug_flags: RenderDebugFlags) {
-                app.add_plugins((
-                    $(PassPhasePlugin::<P, $T>::new(debug_flags),)+
-                ));
-            }
+    impl PhaseItem for PlaceHolder {
+        fn entity(&self) -> Entity {
+            todo!()
+        }
+
+        fn main_entity(&self) -> MainEntity {
+            todo!()
+        }
+
+        fn draw_function(&self) -> DrawFunctionId {
+            todo!()
+        }
+
+        fn batch_range(&self) -> &Range<u32> {
+            todo!()
+        }
+
+        fn batch_range_mut(&mut self) -> &mut Range<u32> {
+            todo!()
+        }
+
+        fn extra_index(&self) -> PhaseItemExtraIndex {
+            todo!()
+        }
+
+        fn batch_range_and_extra_index_mut(
+            &mut self,
+        ) -> (&mut Range<u32>, &mut PhaseItemExtraIndex) {
+            todo!()
+        }
+    }
+
+    impl BinnedPhaseItem for PlaceHolder {
+        type BatchSetKey = Opaque3dBatchSetKey;
+        type BinKey = Opaque3dBinKey;
+
+        fn new(
+            batch_set_key: Self::BatchSetKey,
+            bin_key: Self::BinKey,
+            representative_entity: (Entity, MainEntity),
+            batch_range: Range<u32>,
+            extra_index: PhaseItemExtraIndex,
+        ) -> Self {
+            todo!()
         }
     }
 }
 
+/// A trait for converting a tuple of [`PhaseItem`]s into [`PassPhasePlugin`]s and adding them to the app.
+pub trait PhaseItems {
+    type Phase1: PhaseItemExt;
+    type Phase2: PhaseItemExt;
+    type Phase3: PhaseItemExt;
+    type Phase4: PhaseItemExt;
+}
+
+// For a single item
+impl<PIE> PhaseItems for PIE
+where
+    PIE: PhaseItemExt,
+{
+    type Phase1 = PIE;
+    type Phase2 = private::PlaceHolder;
+    type Phase3 = private::PlaceHolder;
+    type Phase4 = private::PlaceHolder;
+}
+
+// For multiple items
+// macro_rules! impl_to_phase_plugins {
+//     ($($T:ident),+) => {
+//         impl<P, $($T),*> ToPhasePlugins<P> for ($($T,)+)
+//         where
+//             P: Pass,
+//             $(P::RenderCommand: RenderCommand<$T>,)+
+//             $(<P::RenderCommand as RenderCommand<$T>>::Param: ReadOnlySystemParam,)+
+//             $($T: PhaseItemExt),+
+//         {
+
+//             fn add_plugins(app: &mut App, debug_flags: RenderDebugFlags) {
+//                 app.add_plugins((
+//                     $(PassPhasePlugin::<P, $T>::new(debug_flags),)+
+//                 ));
+//             }
+//         }
+//     }
+// }
+
 // NOTE: The maximum number of PhaseItems in a single pass is currently limited to 4,
 // which should be sufficient for most use cases.
-impl_to_phase_plugins!(T0);
-impl_to_phase_plugins!(T0, T1);
-impl_to_phase_plugins!(T0, T1, T2);
-impl_to_phase_plugins!(T0, T1, T2, T3);
+// impl_to_phase_plugins!(T0);
+// impl_to_phase_plugins!(T0, T1);
+// impl_to_phase_plugins!(T0, T1, T2);
+// impl_to_phase_plugins!(T0, T1, T2, T3);
 
 #[derive(Resource, Default)]
 struct MaterialPluginLoaded;
@@ -1146,14 +1224,14 @@ pub struct EntitySpecializationTickPair {
 
 /// Stores the [`SpecializedMaterialViewPipelineCache`] for each view.
 #[derive(Resource, Deref, DerefMut)]
-pub struct SpecializedMaterialPipelineCache<P, PIE> {
+pub struct SpecializedMaterialPipelineCache<P> {
     // view entity -> view pipeline cache
     #[deref]
     map: HashMap<RetainedViewEntity, SpecializedMaterialViewPipelineCache>,
-    _marker: PhantomData<(P, PIE)>,
+    _marker: PhantomData<P>,
 }
 
-impl<P, PIE> Default for SpecializedMaterialPipelineCache<P, PIE> {
+impl<P> Default for SpecializedMaterialPipelineCache<P> {
     fn default() -> Self {
         Self {
             map: Default::default(),
@@ -1225,25 +1303,36 @@ pub struct ViewKeyCache<P>(
 pub struct ViewSpecializationTicks<P>(#[deref] HashMap<RetainedViewEntity, Tick>, PhantomData<P>);
 
 #[derive(Resource, Deref, DerefMut, FromWorld)]
-pub struct PassSpecializedMeshPipelines<P, PIE, S: SpecializedMeshPipeline>(
+pub struct PassSpecializedMeshPipelines<P, S: SpecializedMeshPipeline>(
     #[deref] SpecializedMeshPipelines<S>,
-    PhantomData<(P, PIE)>,
+    PhantomData<P>,
 );
 
-pub fn specialize_material_meshes<P: Pass, PIE: PhaseItemExt>(
+pub fn specialize_material_meshes<P: Pass>(
+    view_render_phases_1: Option<
+        Res<<<P::PhaseItems as PhaseItems>::Phase1 as PhaseItemExt>::Phases>,
+    >,
+    view_render_phases_2: Option<
+        Res<<<P::PhaseItems as PhaseItems>::Phase2 as PhaseItemExt>::Phases>,
+    >,
+    view_render_phases_3: Option<
+        Res<<<P::PhaseItems as PhaseItems>::Phase3 as PhaseItemExt>::Phases>,
+    >,
+    view_render_phases_4: Option<
+        Res<<<P::PhaseItems as PhaseItems>::Phase4 as PhaseItemExt>::Phases>,
+    >,
     render_meshes: Res<RenderAssets<RenderMesh>>,
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_mesh_instances: Res<RenderMeshInstances>,
     render_material_instances: Res<RenderMaterialInstances>,
     render_lightmaps: Res<RenderLightmaps>, //TODO: make this public
     render_visibility_ranges: Res<RenderVisibilityRanges>,
-    view_render_phases: Res<PIE::Phases>,
     views: Query<(&ExtractedView, &RenderVisibleEntities), With<P>>,
     view_key_cache: Res<ViewKeyCache<P::ViewKeyCacheSource>>,
     entity_specialization_ticks: Res<EntitySpecializationTicks>,
     view_specialization_ticks: Res<ViewSpecializationTicks<P::ViewKeyCacheSource>>,
-    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P, PIE>>,
-    mut pipelines: ResMut<PassSpecializedMeshPipelines<P, PIE, P::Specializer>>,
+    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P>>,
+    mut pipelines: ResMut<PassSpecializedMeshPipelines<P, P::Specializer>>,
     pipeline: Res<<P::Specializer as PipelineSpecializer>::Pipeline>,
     pipeline_cache: Res<PipelineCache>,
     ticks: SystemChangeTick,
@@ -1258,6 +1347,7 @@ pub fn specialize_material_meshes<P: Pass, PIE: PhaseItemExt>(
         all_views.insert(view.retained_view_entity);
 
         // TODO: Move this part to a separate system
+
         if !view_render_phases.contains_key(&view.retained_view_entity) {
             continue;
         }
