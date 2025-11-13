@@ -1053,7 +1053,7 @@ pub struct EntitiesNeedingSweep {
 ///
 /// This runs after all invocations of `early_sweep_entities_needing_specialization`.
 /// Because `early_sweep_entities_needing_specialization` is a per-material system and
-/// the SpecializedMaterialPipelineCache is per-pass, we have to perform sweep like this.
+/// the SpecializedMaterialPipelineCache is per-phase, we have to sweep this way.
 pub fn late_sweep_entities_needing_specialization<P: Pass, PIE: PhaseItemExt>(
     views: Query<&ExtractedView, With<P>>,
     mut entities_needing_sweep: ResMut<EntitiesNeedingSweep>,
@@ -1198,6 +1198,7 @@ pub fn check_entities_needing_specialization<M>(
     par_local.drain_into(&mut entities_needing_specialization);
 }
 
+/// TODO: docs
 pub trait PipelineSpecializer: SpecializedMeshPipeline {
     type Pipeline: Resource;
 
