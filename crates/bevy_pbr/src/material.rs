@@ -137,7 +137,7 @@ pub const MATERIAL_BIND_GROUP_INDEX: usize = 3;
 pub trait Material: Asset + AsBindGroup + Clone + Sized {
     /// Returns this material's shaders for all passes.
     ///
-    /// When the legacy shader method is used, the corresponding pass's shader in the [`PassShaders`] will be ignored.
+    /// When the traditional shader method is used, the corresponding pass's shader in the [`PassShaders`] will be ignored.
     /// Currently, only the [`MainPass`] is supported out of the box.
     fn shaders() -> PassShaders {
         let mut pass_shaders = PassShaders::default();
@@ -982,6 +982,13 @@ pub fn extract_entities_needs_specialization<M>(
     }
 }
 
+/// Entities needing to be removed from [`SpecializedMaterialPipelineCache`].
+#[derive(Resource, Default, Deref, DerefMut)]
+pub struct EntitiesNeedingSweep {
+    #[deref]
+    pub entities: HashMap<PassId, Vec<Entity>>,
+}
+
 /// A system that runs after all instances of
 /// [`extract_entities_needs_specialization`] in order to delete specialization
 /// ticks for entities that are no longer renderable.
@@ -1039,13 +1046,6 @@ pub fn early_sweep_entities_needing_specialization<M>(
                 .push(entity);
         }
     }
-}
-
-/// Entities needing to be removed from [`SpecializedMaterialPipelineCache`].
-#[derive(Resource, Default, Deref, DerefMut)]
-pub struct EntitiesNeedingSweep {
-    #[deref]
-    pub entities: HashMap<PassId, Vec<Entity>>,
 }
 
 /// Removes entities from [`SpecializedMaterialPipelineCache`] for the pass based on
@@ -1273,7 +1273,7 @@ pub fn specialize_material_meshes<P: Pass, PIE: PhaseItemExt>(
             .entry(view.retained_view_entity)
             .or_default();
 
-        for (_, visible_entity) in visible_entities.iter::<Mesh3d>() {
+        for (_, visible_entity) in visible_entities.iter::<Mesh3d>() { // TODO: Register VisibilityClass for each passes
             let Some(material_instance) = render_material_instances.instances.get(visible_entity)
             else {
                 continue;
@@ -1306,6 +1306,7 @@ pub fn specialize_material_meshes<P: Pass, PIE: PhaseItemExt>(
             if !PIE::PHASE_TYPES.contains(material.properties.render_phase_type) {
                 continue;
             }
+            // Prefilter for the queuing stage.
             if let None = material
                 .properties
                 .get_draw_function(MaterialDrawFunction(P::id()))
@@ -2313,3 +2314,6 @@ pub fn write_material_bind_group_buffers(
         allocator.write_buffers(&render_device, &render_queue);
     }
 }
+
+/// A composiable render graph node for [`Pass`].
+trait PassNode {}
