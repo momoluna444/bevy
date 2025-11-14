@@ -280,7 +280,7 @@ fn extract_image_materials_needing_specialization(
     entities_needing_specialization: Extract<Res<EntitiesNeedingSpecialization<ImageMaterial>>>,
     mut entity_specialization_ticks: ResMut<EntitySpecializationTicks>,
     mut removed_mesh_material_components: Extract<RemovedComponents<ImageMaterial3d>>,
-    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<MainPass, Opaque3d>>,
+    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<MainPass>>,
     render_material_instances: Res<RenderMaterialInstances>,
     views: Query<&ExtractedView>,
     ticks: SystemChangeTick,
@@ -314,7 +314,7 @@ fn extract_image_materials_needing_specialization(
 fn sweep_image_materials_needing_specialization(
     mut entity_specialization_ticks: ResMut<EntitySpecializationTicks>,
     mut removed_mesh_material_components: Extract<RemovedComponents<ImageMaterial3d>>,
-    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<MainPass, Opaque3d>>,
+    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<MainPass>>,
     render_material_instances: Res<RenderMaterialInstances>,
     views: Query<&ExtractedView>,
 ) {

@@ -12,50 +12,55 @@ use bevy_render::{
 
 use crate::{MeshPipeline, Pass, PhaseItemExt, PhaseItems, PhaseParams, RenderPhaseType};
 
+const DUMMY_PHASE_ERROR: &str = "Dummy phase should never be instantiated.";
+
 macro_rules! define_dummy_phase {
     ($name:ident) => {
         pub struct $name<P>(PhantomData<P>);
 
         impl<P: Pass> PhaseItemExt for $name<P> {
-            const PHASE_TYPES: RenderPhaseType = RenderPhaseType::empty();
-            type Phase = BinnedRenderPhase<Self>;
-            type Phases = ViewBinnedRenderPhases<Self>;
-            type Plugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
 
-            fn queue(_render_phase: &mut Self::Phase, _params: &PhaseParams) {
-                panic!()
+            // Important: It must be empty to ensure it does not match any material.
+            const PHASE_TYPES: RenderPhaseType = RenderPhaseType::empty();
+
+            type RenderPhase = BinnedRenderPhase<Self>;
+            type RenderPhases = ViewBinnedRenderPhases<Self>;
+            type PhasePlugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
+
+            fn queue(_render_phase: &mut Self::RenderPhase, _params: &PhaseParams) {
+                panic!("{}", DUMMY_PHASE_ERROR)
             }
         }
 
         impl<P: Pass> PhaseItem for $name<P> {
             fn entity(&self) -> Entity {
-                panic!()
+                panic!("{}", DUMMY_PHASE_ERROR)
             }
 
             fn main_entity(&self) -> MainEntity {
-                panic!()
+                panic!("{}", DUMMY_PHASE_ERROR)
             }
 
             fn draw_function(&self) -> DrawFunctionId {
-                panic!()
+                panic!("{}", DUMMY_PHASE_ERROR)
             }
 
             fn batch_range(&self) -> &Range<u32> {
-                panic!()
+                panic!("{}", DUMMY_PHASE_ERROR)
             }
 
             fn batch_range_mut(&mut self) -> &mut Range<u32> {
-                panic!()
+                panic!("{}", DUMMY_PHASE_ERROR)
             }
 
             fn extra_index(&self) -> PhaseItemExtraIndex {
-                panic!()
+                panic!("{}", DUMMY_PHASE_ERROR)
             }
 
             fn batch_range_and_extra_index_mut(
                 &mut self,
             ) -> (&mut Range<u32>, &mut PhaseItemExtraIndex) {
-                panic!()
+                panic!("{}", DUMMY_PHASE_ERROR)
             }
         }
 
@@ -70,7 +75,7 @@ macro_rules! define_dummy_phase {
                 _batch_range: Range<u32>,
                 _extra_index: PhaseItemExtraIndex,
             ) -> Self {
-                panic!()
+                panic!("{}", DUMMY_PHASE_ERROR)
             }
         }
     };
@@ -89,6 +94,10 @@ where
     type Phase2 = DummyPhase2<P>;
     type Phase3 = DummyPhase3<P>;
     type Phase4 = DummyPhase4<P>;
+
+    fn valid_phase_count() -> usize {
+        1
+    }
 }
 
 impl<P, PIE1> PhaseItems<P> for (PIE1,)
@@ -100,6 +109,10 @@ where
     type Phase2 = DummyPhase2<P>;
     type Phase3 = DummyPhase3<P>;
     type Phase4 = DummyPhase4<P>;
+
+    fn valid_phase_count() -> usize {
+        1
+    }
 }
 
 impl<P, PIE1, PIE2> PhaseItems<P> for (PIE1, PIE2)
@@ -112,6 +125,10 @@ where
     type Phase2 = PIE2;
     type Phase3 = DummyPhase3<P>;
     type Phase4 = DummyPhase4<P>;
+
+    fn valid_phase_count() -> usize {
+        2
+    }
 }
 
 impl<P, PIE1, PIE2, PIE3> PhaseItems<P> for (PIE1, PIE2, PIE3)
@@ -125,6 +142,10 @@ where
     type Phase2 = PIE2;
     type Phase3 = PIE3;
     type Phase4 = DummyPhase4<P>;
+
+    fn valid_phase_count() -> usize {
+        3
+    }
 }
 
 impl<P, PIE1, PIE2, PIE3, PIE4> PhaseItems<P> for (PIE1, PIE2, PIE3, PIE4)
@@ -139,4 +160,8 @@ where
     type Phase2 = PIE2;
     type Phase3 = PIE3;
     type Phase4 = PIE4;
+
+    fn valid_phase_count() -> usize {
+        4
+    }
 }

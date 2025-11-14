@@ -100,7 +100,6 @@ impl Pass for MainPass {
     type Specializer = MaterialPipelineSpecializer;
 
     type PhaseItems = (Opaque3d, AlphaMask3d, Transmissive3d, Transparent3d);
-    // type PhaseItems = Opaque3d;
 
     type RenderCommand = DrawMaterial;
 }
@@ -362,12 +361,12 @@ impl SpecializedMeshPipeline for MaterialPipelineSpecializer {
 }
 
 impl PhaseItemExt for Opaque3d {
-    type Phase = BinnedRenderPhase<Self>;
-    type Phases = ViewBinnedRenderPhases<Self>;
-    type Plugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
+    type RenderPhase = BinnedRenderPhase<Self>;
+    type RenderPhases = ViewBinnedRenderPhases<Self>;
+    type PhasePlugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
     const PHASE_TYPES: RenderPhaseType = RenderPhaseType::Opaque;
 
-    fn queue(render_phase: &mut Self::Phase, params: &PhaseParams) {
+    fn queue(render_phase: &mut Self::RenderPhase, params: &PhaseParams) {
         if params.material.properties.render_method == OpaqueRendererMethod::Deferred {
             // Even though we aren't going to insert the entity into
             // a bin, we still want to update its cache entry. That
@@ -408,12 +407,12 @@ impl PhaseItemExt for Opaque3d {
 }
 
 impl PhaseItemExt for AlphaMask3d {
-    type Phase = BinnedRenderPhase<Self>;
-    type Phases = ViewBinnedRenderPhases<Self>;
-    type Plugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
+    type RenderPhase = BinnedRenderPhase<Self>;
+    type RenderPhases = ViewBinnedRenderPhases<Self>;
+    type PhasePlugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
     const PHASE_TYPES: RenderPhaseType = RenderPhaseType::AlphaMask;
 
-    fn queue(render_phase: &mut Self::Phase, params: &PhaseParams) {
+    fn queue(render_phase: &mut Self::RenderPhase, params: &PhaseParams) {
         let (vertex_slab, index_slab) = params
             .mesh_allocator
             .mesh_slabs(&params.mesh_instance.mesh_asset_id);
@@ -441,12 +440,12 @@ impl PhaseItemExt for AlphaMask3d {
 }
 
 impl PhaseItemExt for Transmissive3d {
-    type Phase = SortedRenderPhase<Self>;
-    type Phases = ViewSortedRenderPhases<Self>;
-    type Plugin = SortedRenderPhasePlugin<Self, MeshPipeline>;
+    type RenderPhase = SortedRenderPhase<Self>;
+    type RenderPhases = ViewSortedRenderPhases<Self>;
+    type PhasePlugin = SortedRenderPhasePlugin<Self, MeshPipeline>;
     const PHASE_TYPES: RenderPhaseType = RenderPhaseType::Transmissive;
 
-    fn queue(render_phase: &mut Self::Phase, params: &PhaseParams) {
+    fn queue(render_phase: &mut Self::RenderPhase, params: &PhaseParams) {
         let (_, index_slab) = params
             .mesh_allocator
             .mesh_slabs(&params.mesh_instance.mesh_asset_id);
@@ -468,12 +467,12 @@ impl PhaseItemExt for Transmissive3d {
 }
 
 impl PhaseItemExt for Transparent3d {
-    type Phase = SortedRenderPhase<Self>;
-    type Phases = ViewSortedRenderPhases<Self>;
-    type Plugin = SortedRenderPhasePlugin<Self, MeshPipeline>;
+    type RenderPhase = SortedRenderPhase<Self>;
+    type RenderPhases = ViewSortedRenderPhases<Self>;
+    type PhasePlugin = SortedRenderPhasePlugin<Self, MeshPipeline>;
     const PHASE_TYPES: RenderPhaseType = RenderPhaseType::Transparent;
 
-    fn queue(render_phase: &mut Self::Phase, params: &PhaseParams) {
+    fn queue(render_phase: &mut Self::RenderPhase, params: &PhaseParams) {
         let (_, index_slab) = params
             .mesh_allocator
             .mesh_slabs(&params.mesh_instance.mesh_asset_id);

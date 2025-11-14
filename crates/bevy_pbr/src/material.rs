@@ -311,6 +311,10 @@ pub trait Pass
 where
     Self: ExtractComponent + Default,
     <Self::Specializer as SpecializedMeshPipeline>::Key: Sync + Send,
+    <Self::RenderCommand as RenderCommand<Phase1<Self>>>::Param: ReadOnlySystemParam,
+    <Self::RenderCommand as RenderCommand<Phase2<Self>>>::Param: ReadOnlySystemParam,
+    <Self::RenderCommand as RenderCommand<Phase3<Self>>>::Param: ReadOnlySystemParam,
+    <Self::RenderCommand as RenderCommand<Phase4<Self>>>::Param: ReadOnlySystemParam,
 {
     /// The pass responsible for checking view specialization.
     ///
@@ -338,12 +342,27 @@ where
     //
     /// The `RenderCommand`s used for rendering [`PhaseItem`]s.
     /// See [`RenderCommand`] for more details.
-    type RenderCommand: Send + Sync;
+    type RenderCommand: Send
+        + Sync
+        + RenderCommand<Phase1<Self>>
+        + RenderCommand<Phase2<Self>>
+        + RenderCommand<Phase3<Self>>
+        + RenderCommand<Phase4<Self>>;
 
     /// The identifier for this pass.
     fn id() -> PassId {
         PassId::of::<Self>()
     }
+}
+
+/// A trait for converting a tuple of [`PhaseItem`]s into assicated types.
+pub trait PhaseItems<P> {
+    type Phase1: PhaseItemExt;
+    type Phase2: PhaseItemExt;
+    type Phase3: PhaseItemExt;
+    type Phase4: PhaseItemExt;
+
+    fn valid_phase_count() -> usize;
 }
 
 // Fake singleton for [`PassPlugin`]
@@ -370,13 +389,13 @@ impl<P: Pass> PassPlugin<P> {
 
 impl<P: Pass> Plugin for PassPlugin<P> {
     fn build(&self, app: &mut App) {
-        // This is equivalent to: app.add_plugins((PassPhasePlugin::<Pass, Opaque3d>::new(), ...));
-        // P::PhaseItems::add_plugins(app, self.debug_flags);
+        add_pass_phase_plugins::<P>(app, self.debug_flags);
         app.add_plugins(ExtractComponentPlugin::<P>::default());
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
+
         // For all instances of PassPlugin
         render_app
             .init_resource::<EntitySpecializationTicks>()
@@ -422,6 +441,29 @@ impl<P: Pass> Plugin for PassPlugin<P> {
     }
 }
 
+pub fn add_pass_phase_plugins<P>(app: &mut App, debug_flags: RenderDebugFlags)
+where
+    P: Pass,
+{
+    let valid_phase_count = P::PhaseItems::valid_phase_count();
+
+    if valid_phase_count > 0 {
+        app.add_plugins(PassPhasePlugin::<P, Phase1<P>>::new(debug_flags));
+    }
+
+    if valid_phase_count > 1 {
+        app.add_plugins(PassPhasePlugin::<P, Phase2<P>>::new(debug_flags));
+    }
+
+    if valid_phase_count > 2 {
+        app.add_plugins(PassPhasePlugin::<P, Phase3<P>>::new(debug_flags));
+    }
+
+    if valid_phase_count > 3 {
+        app.add_plugins(PassPhasePlugin::<P, Phase4<P>>::new(debug_flags));
+    }
+}
+
 pub struct PassPhasePlugin<P, PI> {
     debug_flags: RenderDebugFlags,
     _marker: PhantomData<(P, PI)>,
@@ -444,8 +486,8 @@ where
     <P::RenderCommand as RenderCommand<PIE>>::Param: ReadOnlySystemParam,
 {
     fn build(&self, app: &mut App) {
-        // NOTE: The resource `PIE::Phases` (ViewRenderPhases) is indirectly initialized `by PIE::Plugin` (RenderPhasePlugin).
-        app.add_plugins(PIE::Plugin::new(self.debug_flags));
+        // NOTE: The resource `PIE::RenderPhases` is indirectly initialized `by PIE::PhasePlugin`.
+        app.add_plugins(PIE::PhasePlugin::new(self.debug_flags));
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -458,45 +500,6 @@ where
             .add_systems(RenderStartup, insert_pass_phase_draw_functions::<P, PIE>);
     }
 }
-
-mod private {}
-
-/// A trait for converting a tuple of [`PhaseItem`]s into [`PassPhasePlugin`]s and adding them to the app.
-pub trait PhaseItems<P> {
-    type Phase1: PhaseItemExt;
-    type Phase2: PhaseItemExt;
-    type Phase3: PhaseItemExt;
-    type Phase4: PhaseItemExt;
-}
-
-// For a single item
-
-// For multiple items
-// macro_rules! impl_to_phase_plugins {
-//     ($($T:ident),+) => {
-//         impl<P, $($T),*> ToPhasePlugins<P> for ($($T,)+)
-//         where
-//             P: Pass,
-//             $(P::RenderCommand: RenderCommand<$T>,)+
-//             $(<P::RenderCommand as RenderCommand<$T>>::Param: ReadOnlySystemParam,)+
-//             $($T: PhaseItemExt),+
-//         {
-
-//             fn add_plugins(app: &mut App, debug_flags: RenderDebugFlags) {
-//                 app.add_plugins((
-//                     $(PassPhasePlugin::<P, $T>::new(debug_flags),)+
-//                 ));
-//             }
-//         }
-//     }
-// }
-
-// NOTE: The maximum number of PhaseItems in a single pass is currently limited to 4,
-// which should be sufficient for most use cases.
-// impl_to_phase_plugins!(T0);
-// impl_to_phase_plugins!(T0, T1);
-// impl_to_phase_plugins!(T0, T1, T2);
-// impl_to_phase_plugins!(T0, T1, T2, T3);
 
 #[derive(Resource, Default)]
 struct MaterialPluginLoaded;
@@ -1225,17 +1228,27 @@ pub struct PassSpecializedMeshPipelines<P, S: SpecializedMeshPipeline>(
     PhantomData<P>,
 );
 
-pub type Phases1<P> = <<<P as Pass>::PhaseItems as PhaseItems<P>>::Phase1 as PhaseItemExt>::Phases;
-pub type Phases2<P> = <<<P as Pass>::PhaseItems as PhaseItems<P>>::Phase2 as PhaseItemExt>::Phases;
-pub type Phases3<P> = <<<P as Pass>::PhaseItems as PhaseItems<P>>::Phase3 as PhaseItemExt>::Phases;
-pub type Phases4<P> = <<<P as Pass>::PhaseItems as PhaseItems<P>>::Phase4 as PhaseItemExt>::Phases;
+type Phase1<P> = <<P as Pass>::PhaseItems as PhaseItems<P>>::Phase1;
+type Phase2<P> = <<P as Pass>::PhaseItems as PhaseItems<P>>::Phase2;
+type Phase3<P> = <<P as Pass>::PhaseItems as PhaseItems<P>>::Phase3;
+type Phase4<P> = <<P as Pass>::PhaseItems as PhaseItems<P>>::Phase4;
+
+type RenderPhase1<P> = <Phase1<P> as PhaseItemExt>::RenderPhase;
+type RenderPhase2<P> = <Phase2<P> as PhaseItemExt>::RenderPhase;
+type RenderPhase3<P> = <Phase3<P> as PhaseItemExt>::RenderPhase;
+type RenderPhase4<P> = <Phase4<P> as PhaseItemExt>::RenderPhase;
+
+type RenderPhases1<P> = <Phase1<P> as PhaseItemExt>::RenderPhases;
+type RenderPhases2<P> = <Phase2<P> as PhaseItemExt>::RenderPhases;
+type RenderPhases3<P> = <Phase3<P> as PhaseItemExt>::RenderPhases;
+type RenderPhases4<P> = <Phase4<P> as PhaseItemExt>::RenderPhases;
 
 pub fn specialize_material_meshes<P: Pass>(
     (view_render_phases_1, view_render_phases_2, view_render_phases_3, view_render_phases_4): (
-        Option<Res<Phases1<P>>>,
-        Option<Res<Phases2<P>>>,
-        Option<Res<Phases3<P>>>,
-        Option<Res<Phases4<P>>>,
+        Option<Res<RenderPhases1<P>>>,
+        Option<Res<RenderPhases2<P>>>,
+        Option<Res<RenderPhases3<P>>>,
+        Option<Res<RenderPhases4<P>>>,
     ),
     render_meshes: Res<RenderAssets<RenderMesh>>,
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
@@ -1428,13 +1441,13 @@ pub struct PhaseParams<'a> {
 }
 
 pub trait PhaseItemExt: PhaseItem {
-    type Phase: RenderPhase;
-    type Phases: ViewRenderPhases<Phase = Self::Phase> + Resource;
-    type Plugin: RenderPhasePlugin + Plugin;
+    type RenderPhase: RenderPhase;
+    type RenderPhases: ViewRenderPhases<Phase = Self::RenderPhase> + Resource;
+    type PhasePlugin: RenderPhasePlugin + Plugin;
 
     const PHASE_TYPES: RenderPhaseType;
 
-    fn queue(render_phase: &mut Self::Phase, params: &PhaseParams);
+    fn queue(render_phase: &mut Self::RenderPhase, params: &PhaseParams);
 }
 
 pub trait RenderPhase {
@@ -1458,7 +1471,7 @@ pub trait ViewRenderPhases {
 
 impl<BPI> RenderPhase for BinnedRenderPhase<BPI>
 where
-    BPI: BinnedPhaseItem + PhaseItemExt<Phase = BinnedRenderPhase<BPI>>,
+    BPI: BinnedPhaseItem + PhaseItemExt<RenderPhase = BinnedRenderPhase<BPI>>,
 {
     #[inline]
     fn add(&mut self, params: &PhaseParams) {
@@ -1477,7 +1490,7 @@ where
 
 impl<SPI> RenderPhase for SortedRenderPhase<SPI>
 where
-    SPI: SortedPhaseItem + PhaseItemExt<Phase = SortedRenderPhase<SPI>>,
+    SPI: SortedPhaseItem + PhaseItemExt<RenderPhase = SortedRenderPhase<SPI>>,
 {
     #[inline]
     fn add(&mut self, params: &PhaseParams) {
@@ -1496,7 +1509,7 @@ where
 
 impl<BPI> ViewRenderPhases for ViewBinnedRenderPhases<BPI>
 where
-    BPI: BinnedPhaseItem + PhaseItemExt<Phase = BinnedRenderPhase<BPI>>,
+    BPI: BinnedPhaseItem + PhaseItemExt<RenderPhase = BinnedRenderPhase<BPI>>,
 {
     type Phase = BinnedRenderPhase<BPI>;
 
@@ -1513,7 +1526,7 @@ where
 
 impl<SPI> ViewRenderPhases for ViewSortedRenderPhases<SPI>
 where
-    SPI: SortedPhaseItem + PhaseItemExt<Phase = SortedRenderPhase<SPI>>,
+    SPI: SortedPhaseItem + PhaseItemExt<RenderPhase = SortedRenderPhase<SPI>>,
 {
     type Phase = SortedRenderPhase<SPI>;
 
@@ -1528,23 +1541,13 @@ where
     }
 }
 
-pub type Phase1<P> = <<<P as Pass>::PhaseItems as PhaseItems<P>>::Phase1 as PhaseItemExt>::Phase;
-pub type Phase2<P> = <<<P as Pass>::PhaseItems as PhaseItems<P>>::Phase2 as PhaseItemExt>::Phase;
-pub type Phase3<P> = <<<P as Pass>::PhaseItems as PhaseItems<P>>::Phase3 as PhaseItemExt>::Phase;
-pub type Phase4<P> = <<<P as Pass>::PhaseItems as PhaseItems<P>>::Phase4 as PhaseItemExt>::Phase;
-
-pub type Item1<P> = <<P as Pass>::PhaseItems as PhaseItems<P>>::Phase1;
-pub type Item2<P> = <<P as Pass>::PhaseItems as PhaseItems<P>>::Phase2;
-pub type Item3<P> = <<P as Pass>::PhaseItems as PhaseItems<P>>::Phase3;
-pub type Item4<P> = <<P as Pass>::PhaseItems as PhaseItems<P>>::Phase4;
-
 /// For each view, iterates over all the meshes visible from that view and adds
 /// them to [`BinnedRenderPhase`]s or [`SortedRenderPhase`]s as appropriate.
 pub fn queue_material_meshes<P: Pass>(
-    mut view_render_phases_1: Option<ResMut<Phases1<P>>>,
-    mut view_render_phases_2: Option<ResMut<Phases2<P>>>,
-    mut view_render_phases_3: Option<ResMut<Phases3<P>>>,
-    mut view_render_phases_4: Option<ResMut<Phases4<P>>>,
+    mut view_render_phases_1: Option<ResMut<RenderPhases1<P>>>,
+    mut view_render_phases_2: Option<ResMut<RenderPhases2<P>>>,
+    mut view_render_phases_3: Option<ResMut<RenderPhases3<P>>>,
+    mut view_render_phases_4: Option<ResMut<RenderPhases4<P>>>,
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_mesh_instances: Res<RenderMeshInstances>,
     render_material_instances: Res<RenderMaterialInstances>,
@@ -1554,16 +1557,16 @@ pub fn queue_material_meshes<P: Pass>(
     specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P>>,
 ) {
     for (view, visible_entities) in &views {
-        let mut phase1: Option<&mut Phase1<P>> = view_render_phases_1
+        let mut phase1: Option<&mut RenderPhase1<P>> = view_render_phases_1
             .as_mut()
             .and_then(|view_render_phases| view_render_phases.get_mut(&view.retained_view_entity));
-        let mut phase2: Option<&mut Phase2<P>> = view_render_phases_2
+        let mut phase2: Option<&mut RenderPhase2<P>> = view_render_phases_2
             .as_mut()
             .and_then(|view_render_phases| view_render_phases.get_mut(&view.retained_view_entity));
-        let mut phase3: Option<&mut Phase3<P>> = view_render_phases_3
+        let mut phase3: Option<&mut RenderPhase3<P>> = view_render_phases_3
             .as_mut()
             .and_then(|view_render_phases| view_render_phases.get_mut(&view.retained_view_entity));
-        let mut phase4: Option<&mut Phase4<P>> = view_render_phases_4
+        let mut phase4: Option<&mut RenderPhase4<P>> = view_render_phases_4
             .as_mut()
             .and_then(|view_render_phases| view_render_phases.get_mut(&view.retained_view_entity));
 
@@ -1634,20 +1637,20 @@ pub fn queue_material_meshes<P: Pass>(
             };
 
             let phase_type = material.properties.render_phase_type;
-            if let Some(phase1) = phase1.as_mut() {
-                if Item1::<P>::PHASE_TYPES.contains(phase_type) {
+            if Phase1::<P>::PHASE_TYPES.contains(phase_type) {
+                if let Some(phase1) = phase1.as_mut() {
                     phase1.add(&params);
                 }
-            } else if let Some(phase2) = phase2.as_mut() {
-                if Item2::<P>::PHASE_TYPES.contains(phase_type) {
+            } else if Phase2::<P>::PHASE_TYPES.contains(phase_type) {
+                if let Some(phase2) = phase2.as_mut() {
                     phase2.add(&params);
                 }
-            } else if let Some(phase3) = phase3.as_mut() {
-                if Item3::<P>::PHASE_TYPES.contains(phase_type) {
+            } else if Phase3::<P>::PHASE_TYPES.contains(phase_type) {
+                if let Some(phase3) = phase3.as_mut() {
                     phase3.add(&params);
                 }
-            } else if let Some(phase4) = phase4.as_mut() {
-                if Item4::<P>::PHASE_TYPES.contains(phase_type) {
+            } else if Phase4::<P>::PHASE_TYPES.contains(phase_type) {
+                if let Some(phase4) = phase4.as_mut() {
                     phase4.add(&params);
                 }
             };
