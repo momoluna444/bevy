@@ -330,7 +330,7 @@ where
     /// ```
     /// type PhaseItems = (Opaque3d, AlphaMask3d, Transmissive3d, Transparent3d);
     /// ```
-    type PhaseItems: PhaseItems;
+    type PhaseItems: PhaseItems<Self>;
 
     // NOTE: Theoretically, the relationship between PhaseItem and RenderCommand
     // is many-to-many, but I haven't seen many use cases of this. For simplicity
@@ -371,7 +371,7 @@ impl<P: Pass> PassPlugin<P> {
 impl<P: Pass> Plugin for PassPlugin<P> {
     fn build(&self, app: &mut App) {
         // This is equivalent to: app.add_plugins((PassPhasePlugin::<Pass, Opaque3d>::new(), ...));
-        P::PhaseItems::add_plugins(app, self.debug_flags);
+        // P::PhaseItems::add_plugins(app, self.debug_flags);
         app.add_plugins(ExtractComponentPlugin::<P>::default());
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
@@ -380,11 +380,31 @@ impl<P: Pass> Plugin for PassPlugin<P> {
         // For all instances of PassPlugin
         render_app
             .init_resource::<EntitySpecializationTicks>()
+            .init_resource::<SpecializedMaterialPipelineCache<P>>()
+            .init_resource::<PassSpecializedMeshPipelines<P, P::Specializer>>()
             .init_resource::<ViewKeyCache<P>>() // Double check
             .init_resource::<ViewSpecializationTicks<P>>() // Double check
             .init_resource::<RenderMaterialInstances>()
             .init_resource::<MaterialBindGroupAllocators>()
-            .add_systems(RenderStartup, init_material_pipeline);
+            .init_resource::<EntitiesNeedingSweep>()
+            .add_systems(RenderStartup, init_material_pipeline)
+            .add_systems(
+                ExtractSchedule,
+                late_sweep_entities_needing_specialization::<P>
+                    .after(MaterialEarlySweepEntitiesNeedingSpecializationSystems)
+                    .before(late_sweep_material_instances),
+            )
+            .add_systems(
+                Render,
+                (
+                    specialize_material_meshes::<P>
+                        .in_set(RenderSystems::PrepareMeshes)
+                        .after(prepare_assets::<RenderMesh>)
+                        .after(collect_meshes_for_gpu_building)
+                        .after(set_mesh_motion_vector_flags),
+                    queue_material_meshes::<P>.in_set(RenderSystems::QueueMeshes),
+                ),
+            );
 
         // Fake singleton start
         if render_app.world().contains_resource::<PassPluginLoaded>() {
@@ -432,111 +452,17 @@ where
         };
 
         render_app
-            .init_resource::<SpecializedMaterialPipelineCache<P, PIE>>()
-            .init_resource::<PassSpecializedMeshPipelines<P, PIE, P::Specializer>>()
-            .init_resource::<EntitiesNeedingSweep>()
             .init_resource::<PassPhaseDrawFunctions>()
             .init_resource::<DrawFunctions<PIE>>()
             .add_render_command::<PIE, P::RenderCommand>()
-            .add_systems(RenderStartup, insert_pass_phase_draw_functions::<P, PIE>)
-            .add_systems(
-                ExtractSchedule,
-                late_sweep_entities_needing_specialization::<P, PIE>
-                    .after(MaterialEarlySweepEntitiesNeedingSpecializationSystems)
-                    .before(late_sweep_material_instances),
-            )
-            .add_systems(
-                Render,
-                (
-                    specialize_material_meshes::<P, PIE>
-                        .in_set(RenderSystems::PrepareMeshes)
-                        .after(prepare_assets::<RenderMesh>)
-                        .after(collect_meshes_for_gpu_building)
-                        .after(set_mesh_motion_vector_flags),
-                    queue_material_meshes::<P, PIE>.in_set(RenderSystems::QueueMeshes),
-                ),
-            );
+            .add_systems(RenderStartup, insert_pass_phase_draw_functions::<P, PIE>);
     }
 }
 
-mod private {
-    use std::ops::Range;
-
-    use bevy_core_pipeline::core_3d::{Opaque3dBatchSetKey, Opaque3dBinKey};
-    use bevy_ecs::entity::Entity;
-    use bevy_render::{
-        render_phase::{
-            BinnedPhaseItem, BinnedRenderPhase, BinnedRenderPhasePlugin, DrawFunctionId, PhaseItem,
-            PhaseItemExtraIndex, ViewBinnedRenderPhases,
-        },
-        sync_world::MainEntity,
-    };
-
-    use crate::{MeshPipeline, PhaseItemExt, RenderPhaseType};
-
-    pub(super) struct PlaceHolder;
-
-    impl PhaseItemExt for PlaceHolder {
-        const PHASE_TYPES: RenderPhaseType = RenderPhaseType::empty();
-        type Phase = BinnedRenderPhase<Self>;
-        type Phases = ViewBinnedRenderPhases<Self>;
-        type Plugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
-
-        fn queue(render_phase: &mut Self::Phase, params: &super::PhaseParams) {
-            todo!()
-        }
-    }
-
-    impl PhaseItem for PlaceHolder {
-        fn entity(&self) -> Entity {
-            todo!()
-        }
-
-        fn main_entity(&self) -> MainEntity {
-            todo!()
-        }
-
-        fn draw_function(&self) -> DrawFunctionId {
-            todo!()
-        }
-
-        fn batch_range(&self) -> &Range<u32> {
-            todo!()
-        }
-
-        fn batch_range_mut(&mut self) -> &mut Range<u32> {
-            todo!()
-        }
-
-        fn extra_index(&self) -> PhaseItemExtraIndex {
-            todo!()
-        }
-
-        fn batch_range_and_extra_index_mut(
-            &mut self,
-        ) -> (&mut Range<u32>, &mut PhaseItemExtraIndex) {
-            todo!()
-        }
-    }
-
-    impl BinnedPhaseItem for PlaceHolder {
-        type BatchSetKey = Opaque3dBatchSetKey;
-        type BinKey = Opaque3dBinKey;
-
-        fn new(
-            batch_set_key: Self::BatchSetKey,
-            bin_key: Self::BinKey,
-            representative_entity: (Entity, MainEntity),
-            batch_range: Range<u32>,
-            extra_index: PhaseItemExtraIndex,
-        ) -> Self {
-            todo!()
-        }
-    }
-}
+mod private {}
 
 /// A trait for converting a tuple of [`PhaseItem`]s into [`PassPhasePlugin`]s and adding them to the app.
-pub trait PhaseItems {
+pub trait PhaseItems<P> {
     type Phase1: PhaseItemExt;
     type Phase2: PhaseItemExt;
     type Phase3: PhaseItemExt;
@@ -544,15 +470,6 @@ pub trait PhaseItems {
 }
 
 // For a single item
-impl<PIE> PhaseItems for PIE
-where
-    PIE: PhaseItemExt,
-{
-    type Phase1 = PIE;
-    type Phase2 = private::PlaceHolder;
-    type Phase3 = private::PlaceHolder;
-    type Phase4 = private::PlaceHolder;
-}
 
 // For multiple items
 // macro_rules! impl_to_phase_plugins {
@@ -1131,11 +1048,11 @@ pub struct EntitiesNeedingSweep {
 ///
 /// This runs after all invocations of `early_sweep_entities_needing_specialization`.
 /// Because `early_sweep_entities_needing_specialization` is a per-material system and
-/// the SpecializedMaterialPipelineCache is per-phase, we have to sweep this way.
-pub fn late_sweep_entities_needing_specialization<P: Pass, PIE: PhaseItemExt>(
+/// the SpecializedMaterialPipelineCache is per-pass, we have to sweep this way.
+pub fn late_sweep_entities_needing_specialization<P: Pass>(
     views: Query<&ExtractedView, With<P>>,
     mut entities_needing_sweep: ResMut<EntitiesNeedingSweep>,
-    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P, PIE>>,
+    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P>>,
 ) {
     let Some(entities) = entities_needing_sweep.get_mut(&P::id()) else {
         return;
@@ -1308,19 +1225,18 @@ pub struct PassSpecializedMeshPipelines<P, S: SpecializedMeshPipeline>(
     PhantomData<P>,
 );
 
+pub type Phases1<P> = <<<P as Pass>::PhaseItems as PhaseItems<P>>::Phase1 as PhaseItemExt>::Phases;
+pub type Phases2<P> = <<<P as Pass>::PhaseItems as PhaseItems<P>>::Phase2 as PhaseItemExt>::Phases;
+pub type Phases3<P> = <<<P as Pass>::PhaseItems as PhaseItems<P>>::Phase3 as PhaseItemExt>::Phases;
+pub type Phases4<P> = <<<P as Pass>::PhaseItems as PhaseItems<P>>::Phase4 as PhaseItemExt>::Phases;
+
 pub fn specialize_material_meshes<P: Pass>(
-    view_render_phases_1: Option<
-        Res<<<P::PhaseItems as PhaseItems>::Phase1 as PhaseItemExt>::Phases>,
-    >,
-    view_render_phases_2: Option<
-        Res<<<P::PhaseItems as PhaseItems>::Phase2 as PhaseItemExt>::Phases>,
-    >,
-    view_render_phases_3: Option<
-        Res<<<P::PhaseItems as PhaseItems>::Phase3 as PhaseItemExt>::Phases>,
-    >,
-    view_render_phases_4: Option<
-        Res<<<P::PhaseItems as PhaseItems>::Phase4 as PhaseItemExt>::Phases>,
-    >,
+    (view_render_phases_1, view_render_phases_2, view_render_phases_3, view_render_phases_4): (
+        Option<Res<Phases1<P>>>,
+        Option<Res<Phases2<P>>>,
+        Option<Res<Phases3<P>>>,
+        Option<Res<Phases4<P>>>,
+    ),
     render_meshes: Res<RenderAssets<RenderMesh>>,
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_mesh_instances: Res<RenderMeshInstances>,
@@ -1347,8 +1263,20 @@ pub fn specialize_material_meshes<P: Pass>(
         all_views.insert(view.retained_view_entity);
 
         // TODO: Move this part to a separate system
-
-        if !view_render_phases.contains_key(&view.retained_view_entity) {
+        let mut all_invalid = true;
+        if let Some(view_render_phases_1) = view_render_phases_1.as_ref() {
+            all_invalid &= !view_render_phases_1.contains_key(&view.retained_view_entity);
+        }
+        if let Some(view_render_phases_2) = view_render_phases_2.as_ref() {
+            all_invalid &= !view_render_phases_2.contains_key(&view.retained_view_entity);
+        }
+        if let Some(view_render_phases_3) = view_render_phases_3.as_ref() {
+            all_invalid &= !view_render_phases_3.contains_key(&view.retained_view_entity);
+        }
+        if let Some(view_render_phases_4) = view_render_phases_4.as_ref() {
+            all_invalid &= !view_render_phases_4.contains_key(&view.retained_view_entity);
+        }
+        if all_invalid {
             continue;
         }
 
@@ -1393,9 +1321,7 @@ pub fn specialize_material_meshes<P: Pass>(
                 continue;
             };
 
-            if !PIE::PHASE_TYPES.contains(material.properties.render_phase_type) {
-                continue;
-            }
+            // Filter entities that not belong to this pass.
             if let None = material
                 .properties
                 .get_draw_function(MaterialDrawFunction(P::id()))
@@ -1503,7 +1429,7 @@ pub struct PhaseParams<'a> {
 
 pub trait PhaseItemExt: PhaseItem {
     type Phase: RenderPhase;
-    type Phases: ViewRenderPhases + Resource;
+    type Phases: ViewRenderPhases<Phase = Self::Phase> + Resource;
     type Plugin: RenderPhasePlugin + Plugin;
 
     const PHASE_TYPES: RenderPhaseType;
@@ -1602,22 +1528,44 @@ where
     }
 }
 
+pub type Phase1<P> = <<<P as Pass>::PhaseItems as PhaseItems<P>>::Phase1 as PhaseItemExt>::Phase;
+pub type Phase2<P> = <<<P as Pass>::PhaseItems as PhaseItems<P>>::Phase2 as PhaseItemExt>::Phase;
+pub type Phase3<P> = <<<P as Pass>::PhaseItems as PhaseItems<P>>::Phase3 as PhaseItemExt>::Phase;
+pub type Phase4<P> = <<<P as Pass>::PhaseItems as PhaseItems<P>>::Phase4 as PhaseItemExt>::Phase;
+
+pub type Item1<P> = <<P as Pass>::PhaseItems as PhaseItems<P>>::Phase1;
+pub type Item2<P> = <<P as Pass>::PhaseItems as PhaseItems<P>>::Phase2;
+pub type Item3<P> = <<P as Pass>::PhaseItems as PhaseItems<P>>::Phase3;
+pub type Item4<P> = <<P as Pass>::PhaseItems as PhaseItems<P>>::Phase4;
+
 /// For each view, iterates over all the meshes visible from that view and adds
 /// them to [`BinnedRenderPhase`]s or [`SortedRenderPhase`]s as appropriate.
-pub fn queue_material_meshes<P: Pass, PIE: PhaseItemExt>(
+pub fn queue_material_meshes<P: Pass>(
+    mut view_render_phases_1: Option<ResMut<Phases1<P>>>,
+    mut view_render_phases_2: Option<ResMut<Phases2<P>>>,
+    mut view_render_phases_3: Option<ResMut<Phases3<P>>>,
+    mut view_render_phases_4: Option<ResMut<Phases4<P>>>,
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_mesh_instances: Res<RenderMeshInstances>,
     render_material_instances: Res<RenderMaterialInstances>,
     mesh_allocator: Res<MeshAllocator>,
     gpu_preprocessing_support: Res<GpuPreprocessingSupport>,
-    mut view_render_phases: ResMut<PIE::Phases>,
     views: Query<(&ExtractedView, &RenderVisibleEntities), With<P>>, // TODO: Add PhaseEntities
-    specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P, PIE>>,
+    specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P>>,
 ) {
     for (view, visible_entities) in &views {
-        let Some(render_phase) = view_render_phases.get_mut(&view.retained_view_entity) else {
-            continue;
-        };
+        let mut phase1: Option<&mut Phase1<P>> = view_render_phases_1
+            .as_mut()
+            .and_then(|view_render_phases| view_render_phases.get_mut(&view.retained_view_entity));
+        let mut phase2: Option<&mut Phase2<P>> = view_render_phases_2
+            .as_mut()
+            .and_then(|view_render_phases| view_render_phases.get_mut(&view.retained_view_entity));
+        let mut phase3: Option<&mut Phase3<P>> = view_render_phases_3
+            .as_mut()
+            .and_then(|view_render_phases| view_render_phases.get_mut(&view.retained_view_entity));
+        let mut phase4: Option<&mut Phase4<P>> = view_render_phases_4
+            .as_mut()
+            .and_then(|view_render_phases| view_render_phases.get_mut(&view.retained_view_entity));
 
         let Some(view_specialized_material_pipeline_cache) =
             specialized_material_pipeline_cache.get(&view.retained_view_entity)
@@ -1636,7 +1584,20 @@ pub fn queue_material_meshes<P: Pass, PIE: PhaseItemExt>(
             };
 
             // Skip the entity if it's cached in a bin and up to date.
-            if render_phase.validate_cached_entity(*visible_entity, current_change_tick) {
+            let mut any_cached = false;
+            if let Some(phase1) = phase1.as_mut() {
+                any_cached |= phase1.validate_cached_entity(*visible_entity, current_change_tick);
+            }
+            if let Some(phase2) = phase2.as_mut() {
+                any_cached |= phase2.validate_cached_entity(*visible_entity, current_change_tick);
+            }
+            if let Some(phase3) = phase3.as_mut() {
+                any_cached |= phase3.validate_cached_entity(*visible_entity, current_change_tick);
+            }
+            if let Some(phase4) = phase4.as_mut() {
+                any_cached |= phase4.validate_cached_entity(*visible_entity, current_change_tick);
+            }
+            if any_cached {
                 continue;
             }
 
@@ -1652,9 +1613,6 @@ pub fn queue_material_meshes<P: Pass, PIE: PhaseItemExt>(
                 continue;
             };
 
-            if !PIE::PHASE_TYPES.contains(material.properties.render_phase_type) {
-                continue;
-            }
             let Some(draw_function) = material
                 .properties
                 .get_draw_function(MaterialDrawFunction(P::id()))
@@ -1674,7 +1632,25 @@ pub fn queue_material_meshes<P: Pass, PIE: PhaseItemExt>(
                 gpu_preprocessing_support: &gpu_preprocessing_support,
                 rangefinder: &rangefinder,
             };
-            render_phase.add(&params);
+
+            let phase_type = material.properties.render_phase_type;
+            if let Some(phase1) = phase1.as_mut() {
+                if Item1::<P>::PHASE_TYPES.contains(phase_type) {
+                    phase1.add(&params);
+                }
+            } else if let Some(phase2) = phase2.as_mut() {
+                if Item2::<P>::PHASE_TYPES.contains(phase_type) {
+                    phase2.add(&params);
+                }
+            } else if let Some(phase3) = phase3.as_mut() {
+                if Item3::<P>::PHASE_TYPES.contains(phase_type) {
+                    phase3.add(&params);
+                }
+            } else if let Some(phase4) = phase4.as_mut() {
+                if Item4::<P>::PHASE_TYPES.contains(phase_type) {
+                    phase4.add(&params);
+                }
+            };
         }
     }
 }

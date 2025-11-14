@@ -100,6 +100,7 @@ impl Pass for MainPass {
     type Specializer = MaterialPipelineSpecializer;
 
     type PhaseItems = (Opaque3d, AlphaMask3d, Transmissive3d, Transparent3d);
+    // type PhaseItems = Opaque3d;
 
     type RenderCommand = DrawMaterial;
 }

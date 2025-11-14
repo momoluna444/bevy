@@ -34,6 +34,7 @@ mod extended_material;
 mod fog;
 mod light_probe;
 mod lightmap;
+mod pass;
 mod material;
 mod material_bind_groups;
 mod main_pass;
