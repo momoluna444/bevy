@@ -407,7 +407,6 @@ impl<P: Pass> Plugin for PassPlugin<P> {
             .init_resource::<RenderMaterialInstances>()
             .init_resource::<MaterialBindGroupAllocators>()
             .init_resource::<EntitiesNeedingSweep>()
-            .add_systems(RenderStartup, init_material_pipeline::<P>)
             .add_systems(
                 ExtractSchedule,
                 late_sweep_entities_needing_specialization::<P>
@@ -624,10 +623,6 @@ pub struct ErasedMaterialPipelineKey {
 #[derive(Resource, Clone)]
 pub struct MaterialPipeline {
     pub mesh_pipeline: MeshPipeline,
-}
-
-pub fn init_material_pipeline<P: Pass>(mut commands: Commands, world: &World) {
-    commands.insert_resource(P::Specializer::init_pipeline(world));
 }
 
 /// Inserts `PhaseItem`'s `DrawFunction`s into [`PassPhaseDrawFunctions`] by their [`RenderPhaseType`].
@@ -1193,8 +1188,6 @@ pub fn check_entities_needing_specialization<M>(
 pub trait PipelineSpecializer: SpecializedMeshPipeline {
     type Pipeline: Resource;
 
-    fn init_pipeline(world: &World) -> Self::Pipeline;
-
     fn create_key(
         view_key: MeshPipelineKey,
         base_mesh_key: &BaseMeshPipelineKey,
@@ -1249,7 +1242,7 @@ pub fn specialize_material_meshes<P: Pass>(
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_mesh_instances: Res<RenderMeshInstances>,
     render_material_instances: Res<RenderMaterialInstances>,
-    render_lightmaps: Res<RenderLightmaps>, //TODO: make this public
+    render_lightmaps: Res<RenderLightmaps>,
     render_visibility_ranges: Res<RenderVisibilityRanges>,
     views: Query<(&ExtractedView, &RenderVisibleEntities), With<P>>,
     view_key_cache: Res<ViewKeyCache<P::ViewKeyCacheSource>>,
@@ -1266,6 +1259,12 @@ pub fn specialize_material_meshes<P: Pass>(
     // Record the retained IDs of all shadow views so that we can expire old
     // pipeline IDs.
     let mut all_views: HashSet<RetainedViewEntity, FixedHasher> = HashSet::default();
+
+    // All the valid render phase types this pass supports, Dummy phase types are none.
+    let valid_render_phase_types = Phase1::<P>::PHASE_TYPES
+        | Phase2::<P>::PHASE_TYPES
+        | Phase3::<P>::PHASE_TYPES
+        | Phase4::<P>::PHASE_TYPES;
 
     for (view, visible_entities) in &views {
         all_views.insert(view.retained_view_entity);
@@ -1329,15 +1328,23 @@ pub fn specialize_material_meshes<P: Pass>(
                 continue;
             };
 
-            // Because users can add materials whose ShaderSets do not overlap at all,
-            // we need to filter out the entities that do not belong to this pass.
+            // Since users can add materials with completely non-overlapping ShaderSets,
+            // we need to filter out any entities that don’t belong to this pass.
             // Maybe we can do this better with VisibilityClass.
             if let None = material
                 .properties
                 .get_draw_function(MaterialDrawFunction(P::id()))
             {
+                // Prevent cases where the material was valid previously but switched pass during this frame.
+                view_specialized_material_pipeline_cache.remove(visible_entity);
                 continue;
             };
+
+            if !valid_render_phase_types.contains(material.properties.render_phase_type) {
+                // Prevent cases where the material was valid previously but switched phase during this frame.
+                view_specialized_material_pipeline_cache.remove(visible_entity);
+                continue;
+            }
 
             let lightmap = render_lightmaps.render_lightmaps.get(visible_entity);
 
@@ -1638,20 +1645,25 @@ pub fn queue_material_meshes<P: Pass>(
                 rangefinder: &rangefinder,
             };
 
+            // NOTE: Because one pass could have phases with same phase types,
+            // we don't use mutual exclusion conditions here.
             let phase_type = material.properties.render_phase_type;
             if Phase1::<P>::PHASE_TYPES.contains(phase_type) {
                 if let Some(phase1) = phase1.as_mut() {
                     phase1.add(&context);
                 }
-            } else if Phase2::<P>::PHASE_TYPES.contains(phase_type) {
+            } 
+            if Phase2::<P>::PHASE_TYPES.contains(phase_type) {
                 if let Some(phase2) = phase2.as_mut() {
                     phase2.add(&context);
                 }
-            } else if Phase3::<P>::PHASE_TYPES.contains(phase_type) {
+            }
+            if Phase3::<P>::PHASE_TYPES.contains(phase_type) {
                 if let Some(phase3) = phase3.as_mut() {
                     phase3.add(&context);
                 }
-            } else if Phase4::<P>::PHASE_TYPES.contains(phase_type) {
+            }
+            if Phase4::<P>::PHASE_TYPES.contains(phase_type) {
                 if let Some(phase4) = phase4.as_mut() {
                     phase4.add(&context);
                 }
@@ -2118,15 +2130,23 @@ where
             _ => None,
         };
 
+        // NOTE: Currently, we use the presence of the draw function to determine whether the pass is enabled.
+        // This can simplify the logic of `specialize_material_meshes` by not relying on specific `xxx_enabled`.
+        // But if any pass bypasses this and adds draw functions manually, this will break.
         let mut draw_functions = SmallVec::new();
-        // draw_functions.push((MaterialDrawFunction.intern(), draw_function_id));
-        if let Some(prepass_draw_function_id) = prepass_draw_function_id {
+        if let Some(prepass_draw_function_id) = prepass_draw_function_id
+            && prepass_enabled
+        {
             draw_functions.push((PrepassDrawFunction.intern(), prepass_draw_function_id));
         }
-        if let Some(deferred_draw_function_id) = deferred_draw_function_id {
+        if let Some(deferred_draw_function_id) = deferred_draw_function_id
+            && render_method == OpaqueRendererMethod::Deferred
+        {
             draw_functions.push((DeferredDrawFunction.intern(), deferred_draw_function_id));
         }
-        if let Some(shadow_draw_function_id) = shadow_draw_function_id {
+        if let Some(shadow_draw_function_id) = shadow_draw_function_id
+            && shadows_enabled
+        {
             draw_functions.push((ShadowsDrawFunction.intern(), shadow_draw_function_id));
         }
 

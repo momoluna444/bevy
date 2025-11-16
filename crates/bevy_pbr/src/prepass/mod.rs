@@ -3,15 +3,13 @@ mod prepass_bindings;
 use std::any::TypeId;
 
 use crate::{
-    alpha_mode_pipeline_key, binding_arrays_are_usable, buffer_layout,
-    collect_meshes_for_gpu_building, init_material_pipeline, set_mesh_motion_vector_flags,
+    alpha_mode_pipeline_key, binding_arrays_are_usable, buffer_layout, init_material_pipeline,
     setup_morph_and_skinning_defs, skin, DeferredDrawFunction, DeferredFragmentShader,
-    DeferredVertexShader, DrawMesh, EntitySpecializationTicks, ErasedMaterialPipelineKey,
-    MaterialPipeline, MaterialProperties, MeshLayouts, MeshPipeline, MeshPipelineKey,
-    OpaqueRendererMethod, Pass, PassId, PhaseItemExt, PipelineSpecializer, PreparedMaterial,
+    DeferredVertexShader, DrawMesh, ErasedMaterialPipelineKey, MaterialPipeline,
+    MaterialProperties, MeshLayouts, MeshPipeline, MeshPipelineKey, OpaqueRendererMethod, Pass,
+    PassId, PassPlugin, PhaseContext, PhaseItemExt, PipelineSpecializer, PreparedMaterial,
     PrepassDrawFunction, PrepassFragmentShader, PrepassVertexShader, RenderLightmap,
-    RenderLightmaps, RenderMaterialInstances, RenderMeshInstanceFlags, RenderMeshInstances,
-    RenderPhaseType, SetMaterialBindGroup, SetMeshBindGroup, ShadowView,
+    RenderMeshInstanceFlags, RenderPhaseType, SetMaterialBindGroup, SetMeshBindGroup, ShadowView,
 };
 use bevy_app::{App, Plugin, PreUpdate};
 use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer, Handle};
@@ -27,12 +25,8 @@ use bevy_ecs::{
 use bevy_math::{Affine3A, Mat4, Vec4};
 use bevy_mesh::{BaseMeshPipelineKey, Mesh, Mesh3d, MeshVertexBufferLayoutRef};
 use bevy_render::{
-    alpha::AlphaMode,
-    batching::gpu_preprocessing::GpuPreprocessingSupport,
     extract_component::ExtractComponent,
     globals::{GlobalsBuffer, GlobalsUniform},
-    mesh::{allocator::MeshAllocator, RenderMesh},
-    render_asset::{prepare_assets, RenderAssets},
     render_phase::*,
     render_resource::{binding_types::uniform_buffer, *},
     renderer::{RenderAdapter, RenderDevice, RenderQueue},
@@ -46,7 +40,7 @@ use bevy_render::{
 use bevy_shader::{load_shader_library, Shader, ShaderDefVal};
 use bevy_transform::prelude::GlobalTransform;
 pub use prepass_bindings::*;
-use tracing::{error, warn};
+use tracing::warn;
 
 #[cfg(feature = "meshlet")]
 use crate::meshlet::{
@@ -59,53 +53,10 @@ use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::{change_detection::Tick, system::SystemChangeTick};
 use bevy_platform::collections::HashMap;
 use bevy_render::{
-    erased_render_asset::ErasedRenderAssets,
     sync_world::MainEntityHashMap,
-    view::RenderVisibleEntities,
     RenderSystems::{PrepareAssets, PrepareResources},
 };
 use bevy_utils::default;
-
-pub struct NewPrepassPlugin;
-
-impl Plugin for NewPrepassPlugin {
-    fn build(&self, app: &mut App) {}
-}
-
-#[derive(Clone, Copy, Default, Component, ExtractComponent)]
-struct Prepass;
-
-impl Pass for Prepass {
-    type ViewKeyCacheSource = Self;
-
-    type Specializer = PrepassPipelineSpecializer;
-
-    type PhaseItems = (Opaque3dPrepass, AlphaMask3dPrepass);
-
-    type RenderCommand = DrawPrepass;
-}
-
-impl PhaseItemExt for Opaque3dPrepass {
-    type RenderPhase = BinnedRenderPhase<Self>;
-    type RenderPhases = ViewBinnedRenderPhases<Self>;
-    type PhasePlugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
-    const PHASE_TYPES: RenderPhaseType = RenderPhaseType::Opaque;
-
-    fn queue(render_phase: &mut Self::RenderPhase, context: &crate::PhaseContext) {
-        todo!()
-    }
-}
-
-impl PhaseItemExt for AlphaMask3dPrepass {
-    type RenderPhase = BinnedRenderPhase<Self>;
-    type RenderPhases = ViewBinnedRenderPhases<Self>;
-    type PhasePlugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
-    const PHASE_TYPES: RenderPhaseType = RenderPhaseType::AlphaMask;
-
-    fn queue(render_phase: &mut Self::RenderPhase, context: &crate::PhaseContext) {
-        todo!()
-    }
-}
 
 /// Sets up everything required to use the prepass pipeline.
 ///
@@ -182,6 +133,8 @@ impl Plugin for PrepassPlugin {
                 ));
         }
 
+        app.add_plugins(PassPlugin::<Prepass>::new(self.debug_flags));
+
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
@@ -196,24 +149,12 @@ impl Plugin for PrepassPlugin {
         }
 
         render_app
-            .init_resource::<ViewPrepassSpecializationTicks>()
-            .init_resource::<ViewKeyPrepassCache>()
+            // .init_resource::<ViewPrepassSpecializationTicks>()
+            // .init_resource::<ViewKeyPrepassCache>()
             .init_resource::<SpecializedPrepassMaterialPipelineCache>()
-            .add_render_command::<Opaque3dPrepass, DrawPrepass>()
-            .add_render_command::<AlphaMask3dPrepass, DrawPrepass>()
-            .add_render_command::<Opaque3dDeferred, DrawPrepass>()
-            .add_render_command::<AlphaMask3dDeferred, DrawPrepass>()
             .add_systems(
                 Render,
-                (
-                    check_prepass_views_need_specialization.in_set(PrepareAssets),
-                    specialize_prepass_material_meshes
-                        .in_set(RenderSystems::PrepareMeshes)
-                        .after(prepare_assets::<RenderMesh>)
-                        .after(collect_meshes_for_gpu_building)
-                        .after(set_mesh_motion_vector_flags),
-                    queue_prepass_material_meshes.in_set(RenderSystems::QueueMeshes),
-                ),
+                (check_prepass_views_need_specialization.in_set(PrepareAssets),),
             );
 
         #[cfg(feature = "meshlet")]
@@ -225,6 +166,24 @@ impl Plugin for PrepassPlugin {
                 .run_if(resource_exists::<InstanceManager>),
         );
     }
+}
+
+#[derive(Clone, Copy, Default, Component, ExtractComponent)]
+pub struct Prepass;
+
+impl Pass for Prepass {
+    type ViewKeyCacheSource = Self;
+
+    type Specializer = PrepassPipelineSpecializer;
+
+    type PhaseItems = (
+        Opaque3dPrepass,
+        AlphaMask3dPrepass,
+        Opaque3dDeferred,
+        AlphaMask3dDeferred,
+    );
+
+    type RenderCommand = DrawPrepass;
 }
 
 #[derive(Resource)]
@@ -374,6 +333,201 @@ pub fn init_prepass_pipeline(
     });
 }
 
+// Extract the render phases for the prepass
+pub fn extract_camera_previous_view_data(
+    mut commands: Commands,
+    cameras_3d: Extract<Query<(RenderEntity, &Camera, Option<&PreviousViewData>), With<Camera3d>>>,
+) {
+    for (entity, camera, maybe_previous_view_data) in cameras_3d.iter() {
+        let mut entity = commands
+            .get_entity(entity)
+            .expect("Camera entity wasn't synced.");
+        if camera.is_active {
+            if let Some(previous_view_data) = maybe_previous_view_data {
+                entity.insert(previous_view_data.clone());
+            }
+        } else {
+            entity.remove::<PreviousViewData>();
+        }
+    }
+}
+
+pub fn prepare_previous_view_uniforms(
+    mut commands: Commands,
+    render_device: Res<RenderDevice>,
+    render_queue: Res<RenderQueue>,
+    mut previous_view_uniforms: ResMut<PreviousViewUniforms>,
+    views: Query<
+        (Entity, &ExtractedView, Option<&PreviousViewData>),
+        Or<(With<Camera3d>, With<ShadowView>)>,
+    >,
+) {
+    let views_iter = views.iter();
+    let view_count = views_iter.len();
+    let Some(mut writer) =
+        previous_view_uniforms
+            .uniforms
+            .get_writer(view_count, &render_device, &render_queue)
+    else {
+        return;
+    };
+
+    for (entity, camera, maybe_previous_view_uniforms) in views_iter {
+        let prev_view_data = match maybe_previous_view_uniforms {
+            Some(previous_view) => previous_view.clone(),
+            None => {
+                let world_from_view = camera.world_from_view.affine();
+                let view_from_world = Mat4::from(world_from_view.inverse());
+                let view_from_clip = camera.clip_from_view.inverse();
+
+                PreviousViewData {
+                    view_from_world,
+                    clip_from_world: camera.clip_from_view * view_from_world,
+                    clip_from_view: camera.clip_from_view,
+                    world_from_clip: Mat4::from(world_from_view) * view_from_clip,
+                    view_from_clip,
+                }
+            }
+        };
+
+        commands.entity(entity).insert(PreviousViewUniformOffset {
+            offset: writer.write(&prev_view_data),
+        });
+    }
+}
+
+#[derive(Resource)]
+pub struct PrepassViewBindGroup {
+    pub motion_vectors: Option<BindGroup>,
+    pub no_motion_vectors: Option<BindGroup>,
+    pub empty_bind_group: BindGroup,
+}
+
+pub fn init_prepass_view_bind_group(
+    mut commands: Commands,
+    render_device: Res<RenderDevice>,
+    pipeline_cache: Res<PipelineCache>,
+    pipeline: Res<PrepassPipeline>,
+) {
+    let empty_bind_group = render_device.create_bind_group(
+        "prepass_view_empty_bind_group",
+        &pipeline_cache.get_bind_group_layout(&pipeline.empty_layout),
+        &[],
+    );
+    commands.insert_resource(PrepassViewBindGroup {
+        motion_vectors: None,
+        no_motion_vectors: None,
+        empty_bind_group,
+    });
+}
+
+pub fn prepare_prepass_view_bind_group(
+    render_device: Res<RenderDevice>,
+    pipeline_cache: Res<PipelineCache>,
+    prepass_pipeline: Res<PrepassPipeline>,
+    view_uniforms: Res<ViewUniforms>,
+    globals_buffer: Res<GlobalsBuffer>,
+    previous_view_uniforms: Res<PreviousViewUniforms>,
+    visibility_ranges: Res<RenderVisibilityRanges>,
+    mut prepass_view_bind_group: ResMut<PrepassViewBindGroup>,
+) {
+    if let (Some(view_binding), Some(globals_binding), Some(visibility_ranges_buffer)) = (
+        view_uniforms.uniforms.binding(),
+        globals_buffer.buffer.binding(),
+        visibility_ranges.buffer().buffer(),
+    ) {
+        prepass_view_bind_group.no_motion_vectors = Some(render_device.create_bind_group(
+            "prepass_view_no_motion_vectors_bind_group",
+            &pipeline_cache.get_bind_group_layout(&prepass_pipeline.view_layout_no_motion_vectors),
+            &BindGroupEntries::with_indices((
+                (0, view_binding.clone()),
+                (1, globals_binding.clone()),
+                (14, visibility_ranges_buffer.as_entire_binding()),
+            )),
+        ));
+
+        if let Some(previous_view_uniforms_binding) = previous_view_uniforms.uniforms.binding() {
+            prepass_view_bind_group.motion_vectors = Some(render_device.create_bind_group(
+                "prepass_view_motion_vectors_bind_group",
+                &pipeline_cache.get_bind_group_layout(&prepass_pipeline.view_layout_motion_vectors),
+                &BindGroupEntries::with_indices((
+                    (0, view_binding),
+                    (1, globals_binding),
+                    (2, previous_view_uniforms_binding),
+                    (14, visibility_ranges_buffer.as_entire_binding()),
+                )),
+            ));
+        }
+    }
+}
+
+/// Stores the [`SpecializedPrepassMaterialViewPipelineCache`] for each view.
+#[derive(Resource, Deref, DerefMut, Default)]
+pub struct SpecializedPrepassMaterialPipelineCache {
+    // view_entity -> view pipeline cache
+    #[deref]
+    map: HashMap<RetainedViewEntity, SpecializedPrepassMaterialViewPipelineCache>,
+}
+
+/// Stores the cached render pipeline ID for each entity in a single view, as
+/// well as the last time it was changed.
+#[derive(Deref, DerefMut, Default)]
+pub struct SpecializedPrepassMaterialViewPipelineCache {
+    // material entity -> (tick, pipeline_id)
+    #[deref]
+    map: MainEntityHashMap<(Tick, CachedRenderPipelineId)>,
+}
+
+#[derive(Resource, Deref, DerefMut, Default, Clone)]
+pub struct ViewKeyPrepassCache(HashMap<RetainedViewEntity, MeshPipelineKey>);
+
+#[derive(Resource, Deref, DerefMut, Default, Clone)]
+pub struct ViewPrepassSpecializationTicks(HashMap<RetainedViewEntity, Tick>);
+
+pub fn check_prepass_views_need_specialization(
+    mut view_key_cache: ResMut<ViewKeyPrepassCache>,
+    mut view_specialization_ticks: ResMut<ViewPrepassSpecializationTicks>,
+    mut views: Query<(
+        &ExtractedView,
+        &Msaa,
+        Option<&DepthPrepass>,
+        Option<&NormalPrepass>,
+        Option<&MotionVectorPrepass>,
+        Option<&DeferredPrepass>,
+    )>,
+    ticks: SystemChangeTick,
+) {
+    for (view, msaa, depth_prepass, normal_prepass, motion_vector_prepass, deferred_prepass) in
+        views.iter_mut()
+    {
+        let mut view_key = MeshPipelineKey::from_msaa_samples(msaa.samples());
+        if depth_prepass.is_some() {
+            view_key |= MeshPipelineKey::DEPTH_PREPASS;
+        }
+        if normal_prepass.is_some() {
+            view_key |= MeshPipelineKey::NORMAL_PREPASS;
+        }
+        if motion_vector_prepass.is_some() {
+            view_key |= MeshPipelineKey::MOTION_VECTOR_PREPASS;
+        }
+        // NOTE: This parameter was moved from `specialize_prepass_material_meshes` to here,
+        // which means the specialization of prepass will be affected by `DeferredPrepass`.
+        if deferred_prepass.is_some() {
+            view_key |= MeshPipelineKey::DEFERRED_PREPASS;
+        }
+
+        if let Some(current_key) = view_key_cache.get_mut(&view.retained_view_entity) {
+            if *current_key != view_key {
+                view_key_cache.insert(view.retained_view_entity, view_key);
+                view_specialization_ticks.insert(view.retained_view_entity, ticks.this_run());
+            }
+        } else {
+            view_key_cache.insert(view.retained_view_entity, view_key);
+            view_specialization_ticks.insert(view.retained_view_entity, ticks.this_run());
+        }
+    }
+}
+
 pub struct PrepassPipelineSpecializer {
     pub(crate) pipeline: PrepassPipeline,
     pub(crate) properties: Arc<MaterialProperties>,
@@ -382,10 +536,6 @@ pub struct PrepassPipelineSpecializer {
 
 impl PipelineSpecializer for PrepassPipelineSpecializer {
     type Pipeline = PrepassPipeline;
-
-    fn init_pipeline(world: &World) -> Self::Pipeline {
-        todo!()
-    }
 
     fn create_key(
         view_key: MeshPipelineKey,
@@ -397,81 +547,61 @@ impl PipelineSpecializer for PrepassPipelineSpecializer {
         type_id: TypeId,
     ) -> Option<Self::Key> {
         let mut mesh_key = view_key | MeshPipelineKey::from_bits_retain(base_mesh_key.bits());
-        todo!()
-        // let alpha_mode = material.properties.alpha_mode;
-        // match alpha_mode {
-        //     AlphaMode::Opaque | AlphaMode::AlphaToCoverage | AlphaMode::Mask(_) => {
-        //         mesh_key |= alpha_mode_pipeline_key(alpha_mode, &Msaa::from_samples(view_key.msaa_samples()));
-        //     }
-        //     AlphaMode::Blend | AlphaMode::Premultiplied | AlphaMode::Add | AlphaMode::Multiply => {
-        //         // In case this material was previously in a valid alpha_mode, remove it to
-        //         // stop the queue system from assuming its retained cache to be valid.
-        //         view_specialized_material_pipeline_cache.remove(visible_entity);
-        //         continue;
-        //     }
-        // }
 
-        // if material.properties.reads_view_transmission_texture {
-        //     // No-op: Materials reading from `ViewTransmissionTexture` are not rendered in the `Opaque3d`
-        //     // phase, and are therefore also excluded from the prepass much like alpha-blended materials.
-        //     view_specialized_material_pipeline_cache.remove(visible_entity);
-        //     continue;
-        // }
+        mesh_key |= alpha_mode_pipeline_key(
+            material.properties.alpha_mode,
+            &Msaa::from_samples(view_key.msaa_samples()),
+        );
 
-        // let forward = match material.properties.render_method {
-        //     OpaqueRendererMethod::Forward => true,
-        //     OpaqueRendererMethod::Deferred => false,
-        //     OpaqueRendererMethod::Auto => unreachable!(),
-        // };
+        let forward = match material.properties.render_method {
+            OpaqueRendererMethod::Forward => true,
+            OpaqueRendererMethod::Deferred => false,
+            OpaqueRendererMethod::Auto => unreachable!(),
+        };
 
-        // let deferred = deferred_prepass.is_some() && !forward;
+        // view_key already contains the deferred prepass flag
+        let deferred = view_key.contains(MeshPipelineKey::DEFERRED_PREPASS) && !forward;
 
-        // if deferred {
-        //     mesh_key |= MeshPipelineKey::DEFERRED_PREPASS;
-        // }
+        if let Some(lightmap) = lightmap {
+            // Even though we don't use the lightmap in the forward prepass, the
+            // `SetMeshBindGroup` render command will bind the data for it. So
+            // we need to include the appropriate flag in the mesh pipeline key
+            // to ensure that the necessary bind group layout entries are
+            // present.
+            mesh_key |= MeshPipelineKey::LIGHTMAPPED;
 
-        // if let Some(lightmap) = render_lightmaps.render_lightmaps.get(visible_entity) {
-        //     // Even though we don't use the lightmap in the forward prepass, the
-        //     // `SetMeshBindGroup` render command will bind the data for it. So
-        //     // we need to include the appropriate flag in the mesh pipeline key
-        //     // to ensure that the necessary bind group layout entries are
-        //     // present.
-        //     mesh_key |= MeshPipelineKey::LIGHTMAPPED;
+            if lightmap.bicubic_sampling && deferred {
+                mesh_key |= MeshPipelineKey::LIGHTMAP_BICUBIC_SAMPLING;
+            }
+        }
 
-        //     if lightmap.bicubic_sampling && deferred {
-        //         mesh_key |= MeshPipelineKey::LIGHTMAP_BICUBIC_SAMPLING;
-        //     }
-        // }
+        if has_crossfade {
+            mesh_key |= MeshPipelineKey::VISIBILITY_RANGE_DITHER;
+        }
 
-        // if render_visibility_ranges.entity_has_crossfading_visibility_ranges(*visible_entity) {
-        //     mesh_key |= MeshPipelineKey::VISIBILITY_RANGE_DITHER;
-        // }
+        // If the previous frame has skins or morph targets, note that.
+        if view_key.contains(MeshPipelineKey::MOTION_VECTOR_PREPASS) {
+            if mesh_instance_flags.contains(RenderMeshInstanceFlags::HAS_PREVIOUS_SKIN) {
+                mesh_key |= MeshPipelineKey::HAS_PREVIOUS_SKIN;
+            }
+            if mesh_instance_flags.contains(RenderMeshInstanceFlags::HAS_PREVIOUS_MORPH) {
+                mesh_key |= MeshPipelineKey::HAS_PREVIOUS_MORPH;
+            }
+        }
 
-        // // If the previous frame has skins or morph targets, note that.
-        // if motion_vector_prepass.is_some() {
-        //     if mesh_instance
-        //         .flags
-        //         .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_SKIN)
-        //     {
-        //         mesh_key |= MeshPipelineKey::HAS_PREVIOUS_SKIN;
-        //     }
-        //     if mesh_instance
-        //         .flags
-        //         .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_MORPH)
-        //     {
-        //         mesh_key |= MeshPipelineKey::HAS_PREVIOUS_MORPH;
-        //     }
-        // }
-
-        // let erased_key = ErasedMaterialPipelineKey {
-        //     mesh_key,
-        //     material_key: material.properties.material_key.clone(),
-        //     type_id: material_instance.asset_id.type_id(),
-        // };
+        Some(ErasedMaterialPipelineKey {
+            mesh_key,
+            material_key: material.properties.material_key.clone(),
+            type_id,
+        })
     }
 
     fn new(pipeline: &Self::Pipeline, material: &PreparedMaterial, pass_id: PassId) -> Self {
-        todo!()
+        PrepassPipelineSpecializer {
+            pipeline: pipeline.clone(),
+            properties: material.properties.clone(),
+            pass_id,
+        }
     }
 }
 
@@ -759,583 +889,162 @@ impl PrepassPipeline {
     }
 }
 
-// Extract the render phases for the prepass
-pub fn extract_camera_previous_view_data(
-    mut commands: Commands,
-    cameras_3d: Extract<Query<(RenderEntity, &Camera, Option<&PreviousViewData>), With<Camera3d>>>,
-) {
-    for (entity, camera, maybe_previous_view_data) in cameras_3d.iter() {
-        let mut entity = commands
-            .get_entity(entity)
-            .expect("Camera entity wasn't synced.");
-        if camera.is_active {
-            if let Some(previous_view_data) = maybe_previous_view_data {
-                entity.insert(previous_view_data.clone());
-            }
-        } else {
-            entity.remove::<PreviousViewData>();
-        }
-    }
-}
+impl PhaseItemExt for Opaque3dPrepass {
+    type RenderPhase = BinnedRenderPhase<Self>;
+    type RenderPhases = ViewBinnedRenderPhases<Self>;
+    type PhasePlugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
+    const PHASE_TYPES: RenderPhaseType = RenderPhaseType::Opaque;
 
-pub fn prepare_previous_view_uniforms(
-    mut commands: Commands,
-    render_device: Res<RenderDevice>,
-    render_queue: Res<RenderQueue>,
-    mut previous_view_uniforms: ResMut<PreviousViewUniforms>,
-    views: Query<
-        (Entity, &ExtractedView, Option<&PreviousViewData>),
-        Or<(With<Camera3d>, With<ShadowView>)>,
-    >,
-) {
-    let views_iter = views.iter();
-    let view_count = views_iter.len();
-    let Some(mut writer) =
-        previous_view_uniforms
-            .uniforms
-            .get_writer(view_count, &render_device, &render_queue)
-    else {
-        return;
-    };
+    fn queue(render_phase: &mut Self::RenderPhase, context: &PhaseContext) {
+        if let OpaqueRendererMethod::Forward = context.material.properties.render_method {
+            let (vertex_slab, index_slab) = context
+                .mesh_allocator
+                .mesh_slabs(&context.mesh_instance.mesh_asset_id);
 
-    for (entity, camera, maybe_previous_view_uniforms) in views_iter {
-        let prev_view_data = match maybe_previous_view_uniforms {
-            Some(previous_view) => previous_view.clone(),
-            None => {
-                let world_from_view = camera.world_from_view.affine();
-                let view_from_world = Mat4::from(world_from_view.inverse());
-                let view_from_clip = camera.clip_from_view.inverse();
-
-                PreviousViewData {
-                    view_from_world,
-                    clip_from_world: camera.clip_from_view * view_from_world,
-                    clip_from_view: camera.clip_from_view,
-                    world_from_clip: Mat4::from(world_from_view) * view_from_clip,
-                    view_from_clip,
-                }
-            }
-        };
-
-        commands.entity(entity).insert(PreviousViewUniformOffset {
-            offset: writer.write(&prev_view_data),
-        });
-    }
-}
-
-#[derive(Resource)]
-pub struct PrepassViewBindGroup {
-    pub motion_vectors: Option<BindGroup>,
-    pub no_motion_vectors: Option<BindGroup>,
-    pub empty_bind_group: BindGroup,
-}
-
-pub fn init_prepass_view_bind_group(
-    mut commands: Commands,
-    render_device: Res<RenderDevice>,
-    pipeline_cache: Res<PipelineCache>,
-    pipeline: Res<PrepassPipeline>,
-) {
-    let empty_bind_group = render_device.create_bind_group(
-        "prepass_view_empty_bind_group",
-        &pipeline_cache.get_bind_group_layout(&pipeline.empty_layout),
-        &[],
-    );
-    commands.insert_resource(PrepassViewBindGroup {
-        motion_vectors: None,
-        no_motion_vectors: None,
-        empty_bind_group,
-    });
-}
-
-pub fn prepare_prepass_view_bind_group(
-    render_device: Res<RenderDevice>,
-    pipeline_cache: Res<PipelineCache>,
-    prepass_pipeline: Res<PrepassPipeline>,
-    view_uniforms: Res<ViewUniforms>,
-    globals_buffer: Res<GlobalsBuffer>,
-    previous_view_uniforms: Res<PreviousViewUniforms>,
-    visibility_ranges: Res<RenderVisibilityRanges>,
-    mut prepass_view_bind_group: ResMut<PrepassViewBindGroup>,
-) {
-    if let (Some(view_binding), Some(globals_binding), Some(visibility_ranges_buffer)) = (
-        view_uniforms.uniforms.binding(),
-        globals_buffer.buffer.binding(),
-        visibility_ranges.buffer().buffer(),
-    ) {
-        prepass_view_bind_group.no_motion_vectors = Some(render_device.create_bind_group(
-            "prepass_view_no_motion_vectors_bind_group",
-            &pipeline_cache.get_bind_group_layout(&prepass_pipeline.view_layout_no_motion_vectors),
-            &BindGroupEntries::with_indices((
-                (0, view_binding.clone()),
-                (1, globals_binding.clone()),
-                (14, visibility_ranges_buffer.as_entire_binding()),
-            )),
-        ));
-
-        if let Some(previous_view_uniforms_binding) = previous_view_uniforms.uniforms.binding() {
-            prepass_view_bind_group.motion_vectors = Some(render_device.create_bind_group(
-                "prepass_view_motion_vectors_bind_group",
-                &pipeline_cache.get_bind_group_layout(&prepass_pipeline.view_layout_motion_vectors),
-                &BindGroupEntries::with_indices((
-                    (0, view_binding),
-                    (1, globals_binding),
-                    (2, previous_view_uniforms_binding),
-                    (14, visibility_ranges_buffer.as_entire_binding()),
-                )),
-            ));
-        }
-    }
-}
-
-/// Stores the [`SpecializedPrepassMaterialViewPipelineCache`] for each view.
-#[derive(Resource, Deref, DerefMut, Default)]
-pub struct SpecializedPrepassMaterialPipelineCache {
-    // view_entity -> view pipeline cache
-    #[deref]
-    map: HashMap<RetainedViewEntity, SpecializedPrepassMaterialViewPipelineCache>,
-}
-
-/// Stores the cached render pipeline ID for each entity in a single view, as
-/// well as the last time it was changed.
-#[derive(Deref, DerefMut, Default)]
-pub struct SpecializedPrepassMaterialViewPipelineCache {
-    // material entity -> (tick, pipeline_id)
-    #[deref]
-    map: MainEntityHashMap<(Tick, CachedRenderPipelineId)>,
-}
-
-#[derive(Resource, Deref, DerefMut, Default, Clone)]
-pub struct ViewKeyPrepassCache(HashMap<RetainedViewEntity, MeshPipelineKey>);
-
-#[derive(Resource, Deref, DerefMut, Default, Clone)]
-pub struct ViewPrepassSpecializationTicks(HashMap<RetainedViewEntity, Tick>);
-
-pub fn check_prepass_views_need_specialization(
-    mut view_key_cache: ResMut<ViewKeyPrepassCache>,
-    mut view_specialization_ticks: ResMut<ViewPrepassSpecializationTicks>,
-    mut views: Query<(
-        &ExtractedView,
-        &Msaa,
-        Option<&DepthPrepass>,
-        Option<&NormalPrepass>,
-        Option<&MotionVectorPrepass>,
-    )>,
-    ticks: SystemChangeTick,
-) {
-    for (view, msaa, depth_prepass, normal_prepass, motion_vector_prepass) in views.iter_mut() {
-        let mut view_key = MeshPipelineKey::from_msaa_samples(msaa.samples());
-        if depth_prepass.is_some() {
-            view_key |= MeshPipelineKey::DEPTH_PREPASS;
-        }
-        if normal_prepass.is_some() {
-            view_key |= MeshPipelineKey::NORMAL_PREPASS;
-        }
-        if motion_vector_prepass.is_some() {
-            view_key |= MeshPipelineKey::MOTION_VECTOR_PREPASS;
-        }
-
-        if let Some(current_key) = view_key_cache.get_mut(&view.retained_view_entity) {
-            if *current_key != view_key {
-                view_key_cache.insert(view.retained_view_entity, view_key);
-                view_specialization_ticks.insert(view.retained_view_entity, ticks.this_run());
-            }
-        } else {
-            view_key_cache.insert(view.retained_view_entity, view_key);
-            view_specialization_ticks.insert(view.retained_view_entity, ticks.this_run());
-        }
-    }
-}
-
-pub fn specialize_prepass_material_meshes(
-    render_meshes: Res<RenderAssets<RenderMesh>>,
-    render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
-    render_mesh_instances: Res<RenderMeshInstances>,
-    render_material_instances: Res<RenderMaterialInstances>,
-    render_lightmaps: Res<RenderLightmaps>,
-    render_visibility_ranges: Res<RenderVisibilityRanges>,
-    view_key_cache: Res<ViewKeyPrepassCache>,
-    views: Query<(
-        &ExtractedView,
-        &RenderVisibleEntities,
-        &Msaa,
-        Option<&MotionVectorPrepass>,
-        Option<&DeferredPrepass>,
-    )>,
-    (
-        opaque_prepass_render_phases,
-        alpha_mask_prepass_render_phases,
-        opaque_deferred_render_phases,
-        alpha_mask_deferred_render_phases,
-    ): (
-        Res<ViewBinnedRenderPhases<Opaque3dPrepass>>,
-        Res<ViewBinnedRenderPhases<AlphaMask3dPrepass>>,
-        Res<ViewBinnedRenderPhases<Opaque3dDeferred>>,
-        Res<ViewBinnedRenderPhases<AlphaMask3dDeferred>>,
-    ),
-    (
-        mut specialized_material_pipeline_cache,
-        ticks,
-        prepass_pipeline,
-        mut pipelines,
-        pipeline_cache,
-        view_specialization_ticks,
-        entity_specialization_ticks,
-    ): (
-        ResMut<SpecializedPrepassMaterialPipelineCache>,
-        SystemChangeTick,
-        Res<PrepassPipeline>,
-        ResMut<SpecializedMeshPipelines<PrepassPipelineSpecializer>>,
-        Res<PipelineCache>,
-        Res<ViewPrepassSpecializationTicks>,
-        Res<EntitySpecializationTicks>,
-    ),
-) {
-    for (extracted_view, visible_entities, msaa, motion_vector_prepass, deferred_prepass) in &views
-    {
-        if !opaque_deferred_render_phases.contains_key(&extracted_view.retained_view_entity)
-            && !alpha_mask_deferred_render_phases.contains_key(&extracted_view.retained_view_entity)
-            && !opaque_prepass_render_phases.contains_key(&extracted_view.retained_view_entity)
-            && !alpha_mask_prepass_render_phases.contains_key(&extracted_view.retained_view_entity)
-        {
-            continue;
-        }
-
-        let Some(view_key) = view_key_cache.get(&extracted_view.retained_view_entity) else {
-            continue;
-        };
-
-        let view_tick = view_specialization_ticks
-            .get(&extracted_view.retained_view_entity)
-            .unwrap();
-        let view_specialized_material_pipeline_cache = specialized_material_pipeline_cache
-            .entry(extracted_view.retained_view_entity)
-            .or_default();
-
-        for (_, visible_entity) in visible_entities.iter::<Mesh3d>() {
-            let Some(material_instance) = render_material_instances.instances.get(visible_entity)
-            else {
-                continue;
-            };
-            let Some(mesh_instance) = render_mesh_instances.render_mesh_queue_data(*visible_entity)
-            else {
-                continue;
-            };
-            let entity_tick = entity_specialization_ticks
-                .get(visible_entity)
-                .unwrap()
-                .system_tick;
-            let last_specialized_tick = view_specialized_material_pipeline_cache
-                .get(visible_entity)
-                .map(|(tick, _)| *tick);
-            let needs_specialization = last_specialized_tick.is_none_or(|tick| {
-                view_tick.is_newer_than(tick, ticks.this_run())
-                    || entity_tick.is_newer_than(tick, ticks.this_run())
-            });
-            if !needs_specialization {
-                continue;
-            }
-            let Some(material) = render_materials.get(material_instance.asset_id) else {
-                continue;
-            };
-            if !material.properties.prepass_enabled && !material.properties.shadows_enabled {
-                // If the material was previously specialized for prepass, remove it
-                view_specialized_material_pipeline_cache.remove(visible_entity);
-                continue;
-            }
-            let Some(mesh) = render_meshes.get(mesh_instance.mesh_asset_id) else {
-                continue;
-            };
-
-            let mut mesh_key = *view_key | MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
-
-            let alpha_mode = material.properties.alpha_mode;
-            match alpha_mode {
-                AlphaMode::Opaque | AlphaMode::AlphaToCoverage | AlphaMode::Mask(_) => {
-                    mesh_key |= alpha_mode_pipeline_key(alpha_mode, msaa);
-                }
-                AlphaMode::Blend
-                | AlphaMode::Premultiplied
-                | AlphaMode::Add
-                | AlphaMode::Multiply => {
-                    // In case this material was previously in a valid alpha_mode, remove it to
-                    // stop the queue system from assuming its retained cache to be valid.
-                    view_specialized_material_pipeline_cache.remove(visible_entity);
-                    continue;
-                }
-            }
-
-            if material.properties.reads_view_transmission_texture {
-                // No-op: Materials reading from `ViewTransmissionTexture` are not rendered in the `Opaque3d`
-                // phase, and are therefore also excluded from the prepass much like alpha-blended materials.
-                view_specialized_material_pipeline_cache.remove(visible_entity);
-                continue;
-            }
-
-            let forward = match material.properties.render_method {
-                OpaqueRendererMethod::Forward => true,
-                OpaqueRendererMethod::Deferred => false,
-                OpaqueRendererMethod::Auto => unreachable!(),
-            };
-
-            let deferred = deferred_prepass.is_some() && !forward;
-
-            if deferred {
-                mesh_key |= MeshPipelineKey::DEFERRED_PREPASS;
-            }
-
-            if let Some(lightmap) = render_lightmaps.render_lightmaps.get(visible_entity) {
-                // Even though we don't use the lightmap in the forward prepass, the
-                // `SetMeshBindGroup` render command will bind the data for it. So
-                // we need to include the appropriate flag in the mesh pipeline key
-                // to ensure that the necessary bind group layout entries are
-                // present.
-                mesh_key |= MeshPipelineKey::LIGHTMAPPED;
-
-                if lightmap.bicubic_sampling && deferred {
-                    mesh_key |= MeshPipelineKey::LIGHTMAP_BICUBIC_SAMPLING;
-                }
-            }
-
-            if render_visibility_ranges.entity_has_crossfading_visibility_ranges(*visible_entity) {
-                mesh_key |= MeshPipelineKey::VISIBILITY_RANGE_DITHER;
-            }
-
-            // If the previous frame has skins or morph targets, note that.
-            if motion_vector_prepass.is_some() {
-                if mesh_instance
-                    .flags
-                    .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_SKIN)
-                {
-                    mesh_key |= MeshPipelineKey::HAS_PREVIOUS_SKIN;
-                }
-                if mesh_instance
-                    .flags
-                    .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_MORPH)
-                {
-                    mesh_key |= MeshPipelineKey::HAS_PREVIOUS_MORPH;
-                }
-            }
-
-            let erased_key = ErasedMaterialPipelineKey {
-                mesh_key,
-                material_key: material.properties.material_key.clone(),
-                type_id: material_instance.asset_id.type_id(),
-            };
-            let prepass_pipeline_specializer = PrepassPipelineSpecializer {
-                pipeline: prepass_pipeline.clone(),
-                properties: material.properties.clone(),
-            };
-            let pipeline_id = pipelines.specialize(
-                &pipeline_cache,
-                &prepass_pipeline_specializer,
-                erased_key,
-                &mesh.layout,
+            render_phase.add(
+                OpaqueNoLightmap3dBatchSetKey {
+                    draw_function: context
+                        .material
+                        .properties
+                        .get_draw_function(PrepassDrawFunction)
+                        .unwrap(),
+                    pipeline: context.pipeline,
+                    material_bind_group_index: Some(context.material.binding.group.0),
+                    vertex_slab: vertex_slab.unwrap_or_default(),
+                    index_slab,
+                },
+                OpaqueNoLightmap3dBinKey {
+                    asset_id: context.mesh_instance.mesh_asset_id.into(),
+                },
+                (context.entity, context.main_entity),
+                context.mesh_instance.current_uniform_index,
+                BinnedRenderPhaseType::mesh(
+                    context.mesh_instance.should_batch(),
+                    &context.gpu_preprocessing_support,
+                ),
+                context.current_change_tick,
             );
-            let pipeline_id = match pipeline_id {
-                Ok(id) => id,
-                Err(err) => {
-                    error!("{}", err);
-                    continue;
-                }
-            };
-
-            view_specialized_material_pipeline_cache
-                .insert(*visible_entity, (ticks.this_run(), pipeline_id));
         }
     }
 }
 
-pub fn queue_prepass_material_meshes(
-    render_mesh_instances: Res<RenderMeshInstances>,
-    render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
-    render_material_instances: Res<RenderMaterialInstances>,
-    mesh_allocator: Res<MeshAllocator>,
-    gpu_preprocessing_support: Res<GpuPreprocessingSupport>,
-    mut opaque_prepass_render_phases: ResMut<ViewBinnedRenderPhases<Opaque3dPrepass>>,
-    mut alpha_mask_prepass_render_phases: ResMut<ViewBinnedRenderPhases<AlphaMask3dPrepass>>,
-    mut opaque_deferred_render_phases: ResMut<ViewBinnedRenderPhases<Opaque3dDeferred>>,
-    mut alpha_mask_deferred_render_phases: ResMut<ViewBinnedRenderPhases<AlphaMask3dDeferred>>,
-    views: Query<(&ExtractedView, &RenderVisibleEntities)>,
-    specialized_material_pipeline_cache: Res<SpecializedPrepassMaterialPipelineCache>,
-) {
-    for (extracted_view, visible_entities) in &views {
-        let (
-            mut opaque_phase,
-            mut alpha_mask_phase,
-            mut opaque_deferred_phase,
-            mut alpha_mask_deferred_phase,
-        ) = (
-            opaque_prepass_render_phases.get_mut(&extracted_view.retained_view_entity),
-            alpha_mask_prepass_render_phases.get_mut(&extracted_view.retained_view_entity),
-            opaque_deferred_render_phases.get_mut(&extracted_view.retained_view_entity),
-            alpha_mask_deferred_render_phases.get_mut(&extracted_view.retained_view_entity),
-        );
+impl PhaseItemExt for Opaque3dDeferred {
+    type RenderPhase = BinnedRenderPhase<Self>;
+    type RenderPhases = ViewBinnedRenderPhases<Self>;
+    type PhasePlugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
+    const PHASE_TYPES: RenderPhaseType = RenderPhaseType::Opaque;
 
-        let Some(view_specialized_material_pipeline_cache) =
-            specialized_material_pipeline_cache.get(&extracted_view.retained_view_entity)
-        else {
-            continue;
-        };
+    fn queue(render_phase: &mut Self::RenderPhase, context: &PhaseContext) {
+        if let OpaqueRendererMethod::Deferred = context.material.properties.render_method {
+            let (vertex_slab, index_slab) = context
+                .mesh_allocator
+                .mesh_slabs(&context.mesh_instance.mesh_asset_id);
 
-        // Skip if there's no place to put the mesh.
-        if opaque_phase.is_none()
-            && alpha_mask_phase.is_none()
-            && opaque_deferred_phase.is_none()
-            && alpha_mask_deferred_phase.is_none()
-        {
-            continue;
+            render_phase.add(
+                OpaqueNoLightmap3dBatchSetKey {
+                    draw_function: context
+                        .material
+                        .properties
+                        .get_draw_function(DeferredDrawFunction)
+                        .unwrap(),
+                    pipeline: context.pipeline,
+                    material_bind_group_index: Some(context.material.binding.group.0),
+                    vertex_slab: vertex_slab.unwrap_or_default(),
+                    index_slab,
+                },
+                OpaqueNoLightmap3dBinKey {
+                    asset_id: context.mesh_instance.mesh_asset_id.into(),
+                },
+                (context.entity, context.main_entity),
+                context.mesh_instance.current_uniform_index,
+                BinnedRenderPhaseType::mesh(
+                    context.mesh_instance.should_batch(),
+                    &context.gpu_preprocessing_support,
+                ),
+                context.current_change_tick,
+            );
         }
+    }
+}
 
-        for (render_entity, visible_entity) in visible_entities.iter::<Mesh3d>() {
-            let Some((current_change_tick, pipeline_id)) =
-                view_specialized_material_pipeline_cache.get(visible_entity)
-            else {
-                continue;
-            };
+impl PhaseItemExt for AlphaMask3dPrepass {
+    type RenderPhase = BinnedRenderPhase<Self>;
+    type RenderPhases = ViewBinnedRenderPhases<Self>;
+    type PhasePlugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
+    const PHASE_TYPES: RenderPhaseType = RenderPhaseType::AlphaMask;
 
-            // Skip the entity if it's cached in a bin and up to date.
-            if opaque_phase.as_mut().is_some_and(|phase| {
-                phase.validate_cached_entity(*visible_entity, *current_change_tick)
-            }) || alpha_mask_phase.as_mut().is_some_and(|phase| {
-                phase.validate_cached_entity(*visible_entity, *current_change_tick)
-            }) || opaque_deferred_phase.as_mut().is_some_and(|phase| {
-                phase.validate_cached_entity(*visible_entity, *current_change_tick)
-            }) || alpha_mask_deferred_phase.as_mut().is_some_and(|phase| {
-                phase.validate_cached_entity(*visible_entity, *current_change_tick)
-            }) {
-                continue;
-            }
+    fn queue(render_phase: &mut Self::RenderPhase, context: &PhaseContext) {
+        if let OpaqueRendererMethod::Forward = context.material.properties.render_method {
+            let (vertex_slab, index_slab) = context
+                .mesh_allocator
+                .mesh_slabs(&context.mesh_instance.mesh_asset_id);
 
-            let Some(material_instance) = render_material_instances.instances.get(visible_entity)
-            else {
-                continue;
+            let batch_set_key = OpaqueNoLightmap3dBatchSetKey {
+                draw_function: context
+                    .material
+                    .properties
+                    .get_draw_function(PrepassDrawFunction)
+                    .unwrap(),
+                pipeline: context.pipeline,
+                material_bind_group_index: Some(context.material.binding.group.0),
+                vertex_slab: vertex_slab.unwrap_or_default(),
+                index_slab,
             };
-            let Some(mesh_instance) = render_mesh_instances.render_mesh_queue_data(*visible_entity)
-            else {
-                continue;
+            let bin_key = OpaqueNoLightmap3dBinKey {
+                asset_id: context.mesh_instance.mesh_asset_id.into(),
             };
-            let Some(material) = render_materials.get(material_instance.asset_id) else {
-                continue;
-            };
-            let (vertex_slab, index_slab) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
+            render_phase.add(
+                batch_set_key,
+                bin_key,
+                (context.entity, context.main_entity),
+                context.mesh_instance.current_uniform_index,
+                BinnedRenderPhaseType::mesh(
+                    context.mesh_instance.should_batch(),
+                    &context.gpu_preprocessing_support,
+                ),
+                context.current_change_tick,
+            );
+        }
+    }
+}
 
-            let deferred = match material.properties.render_method {
-                OpaqueRendererMethod::Forward => false,
-                OpaqueRendererMethod::Deferred => true,
-                OpaqueRendererMethod::Auto => unreachable!(),
-            };
+impl PhaseItemExt for AlphaMask3dDeferred {
+    type RenderPhase = BinnedRenderPhase<Self>;
+    type RenderPhases = ViewBinnedRenderPhases<Self>;
+    type PhasePlugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
+    const PHASE_TYPES: RenderPhaseType = RenderPhaseType::AlphaMask;
 
-            match material.properties.render_phase_type {
-                RenderPhaseType::Opaque => {
-                    if deferred {
-                        opaque_deferred_phase.as_mut().unwrap().add(
-                            OpaqueNoLightmap3dBatchSetKey {
-                                draw_function: material
-                                    .properties
-                                    .get_draw_function(DeferredDrawFunction)
-                                    .unwrap(),
-                                pipeline: *pipeline_id,
-                                material_bind_group_index: Some(material.binding.group.0),
-                                vertex_slab: vertex_slab.unwrap_or_default(),
-                                index_slab,
-                            },
-                            OpaqueNoLightmap3dBinKey {
-                                asset_id: mesh_instance.mesh_asset_id.into(),
-                            },
-                            (*render_entity, *visible_entity),
-                            mesh_instance.current_uniform_index,
-                            BinnedRenderPhaseType::mesh(
-                                mesh_instance.should_batch(),
-                                &gpu_preprocessing_support,
-                            ),
-                            *current_change_tick,
-                        );
-                    } else if let Some(opaque_phase) = opaque_phase.as_mut() {
-                        let (vertex_slab, index_slab) =
-                            mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
-                        opaque_phase.add(
-                            OpaqueNoLightmap3dBatchSetKey {
-                                draw_function: material
-                                    .properties
-                                    .get_draw_function(PrepassDrawFunction)
-                                    .unwrap(),
-                                pipeline: *pipeline_id,
-                                material_bind_group_index: Some(material.binding.group.0),
-                                vertex_slab: vertex_slab.unwrap_or_default(),
-                                index_slab,
-                            },
-                            OpaqueNoLightmap3dBinKey {
-                                asset_id: mesh_instance.mesh_asset_id.into(),
-                            },
-                            (*render_entity, *visible_entity),
-                            mesh_instance.current_uniform_index,
-                            BinnedRenderPhaseType::mesh(
-                                mesh_instance.should_batch(),
-                                &gpu_preprocessing_support,
-                            ),
-                            *current_change_tick,
-                        );
-                    }
-                }
-                RenderPhaseType::AlphaMask => {
-                    if deferred {
-                        let (vertex_slab, index_slab) =
-                            mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
-                        let batch_set_key = OpaqueNoLightmap3dBatchSetKey {
-                            draw_function: material
-                                .properties
-                                .get_draw_function(DeferredDrawFunction)
-                                .unwrap(),
-                            pipeline: *pipeline_id,
-                            material_bind_group_index: Some(material.binding.group.0),
-                            vertex_slab: vertex_slab.unwrap_or_default(),
-                            index_slab,
-                        };
-                        let bin_key = OpaqueNoLightmap3dBinKey {
-                            asset_id: mesh_instance.mesh_asset_id.into(),
-                        };
-                        alpha_mask_deferred_phase.as_mut().unwrap().add(
-                            batch_set_key,
-                            bin_key,
-                            (*render_entity, *visible_entity),
-                            mesh_instance.current_uniform_index,
-                            BinnedRenderPhaseType::mesh(
-                                mesh_instance.should_batch(),
-                                &gpu_preprocessing_support,
-                            ),
-                            *current_change_tick,
-                        );
-                    } else if let Some(alpha_mask_phase) = alpha_mask_phase.as_mut() {
-                        let (vertex_slab, index_slab) =
-                            mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
-                        let batch_set_key = OpaqueNoLightmap3dBatchSetKey {
-                            draw_function: material
-                                .properties
-                                .get_draw_function(PrepassDrawFunction)
-                                .unwrap(),
-                            pipeline: *pipeline_id,
-                            material_bind_group_index: Some(material.binding.group.0),
-                            vertex_slab: vertex_slab.unwrap_or_default(),
-                            index_slab,
-                        };
-                        let bin_key = OpaqueNoLightmap3dBinKey {
-                            asset_id: mesh_instance.mesh_asset_id.into(),
-                        };
-                        alpha_mask_phase.add(
-                            batch_set_key,
-                            bin_key,
-                            (*render_entity, *visible_entity),
-                            mesh_instance.current_uniform_index,
-                            BinnedRenderPhaseType::mesh(
-                                mesh_instance.should_batch(),
-                                &gpu_preprocessing_support,
-                            ),
-                            *current_change_tick,
-                        );
-                    }
-                }
-                _ => {}
-            }
+    fn queue(render_phase: &mut Self::RenderPhase, context: &PhaseContext) {
+        if let OpaqueRendererMethod::Deferred = context.material.properties.render_method {
+            let (vertex_slab, index_slab) = context
+                .mesh_allocator
+                .mesh_slabs(&context.mesh_instance.mesh_asset_id);
+
+            let batch_set_key = OpaqueNoLightmap3dBatchSetKey {
+                draw_function: context
+                    .material
+                    .properties
+                    .get_draw_function(DeferredDrawFunction)
+                    .unwrap(),
+                pipeline: context.pipeline,
+                material_bind_group_index: Some(context.material.binding.group.0),
+                vertex_slab: vertex_slab.unwrap_or_default(),
+                index_slab,
+            };
+            let bin_key = OpaqueNoLightmap3dBinKey {
+                asset_id: context.mesh_instance.mesh_asset_id.into(),
+            };
+            render_phase.add(
+                batch_set_key,
+                bin_key,
+                (context.entity, context.main_entity),
+                context.mesh_instance.current_uniform_index,
+                BinnedRenderPhaseType::mesh(
+                    context.mesh_instance.should_batch(),
+                    &context.gpu_preprocessing_support,
+                ),
+                context.current_change_tick,
+            );
         }
     }
 }

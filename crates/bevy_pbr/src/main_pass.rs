@@ -22,18 +22,13 @@ use bevy_ecs::{
 use bevy_light::{EnvironmentMapLight, IrradianceVolume, ShadowFilteringMethod};
 use bevy_mesh::{BaseMeshPipelineKey, MeshVertexBufferLayoutRef};
 use bevy_render::{
-    camera::TemporalJitter,
-    extract_component::ExtractComponent,
-    render_phase::{
+    Render, RenderApp, RenderDebugFlags, RenderStartup, RenderSystems, camera::TemporalJitter, extract_component::ExtractComponent, render_phase::{
         AddRenderCommand, BinnedRenderPhase, BinnedRenderPhasePlugin, BinnedRenderPhaseType,
         DrawFunctions, PhaseItemExtraIndex, SortedRenderPhase, SortedRenderPhasePlugin,
         ViewBinnedRenderPhases, ViewSortedRenderPhases,
-    },
-    render_resource::{
+    }, render_resource::{
         RenderPipelineDescriptor, SpecializedMeshPipeline, SpecializedMeshPipelineError,
-    },
-    view::{ExtractedView, Msaa},
-    Render, RenderApp, RenderDebugFlags, RenderSystems,
+    }, view::{ExtractedView, Msaa}
 };
 use bevy_shader::ShaderDefVal;
 
@@ -64,10 +59,12 @@ impl Plugin for MainPassPlugin {
             return;
         };
 
-        render_app.add_systems(
-            Render,
-            check_views_need_specialization::<MainPass>.in_set(RenderSystems::PrepareAssets),
-        );
+        render_app
+            .add_systems(RenderStartup, init_material_pipeline)
+            .add_systems(
+                Render,
+                check_views_need_specialization::<MainPass>.in_set(RenderSystems::PrepareAssets),
+            );
 
         // This part is for Shadow, maybe we can move it to a separate plugin
         render_app
@@ -236,6 +233,12 @@ pub fn check_views_need_specialization<P: Pass>(
         }
     }
 }
+
+pub fn init_material_pipeline(mut commands: Commands, mesh_pipeline: Res<MeshPipeline>) {
+    commands.insert_resource(MaterialPipeline {
+        mesh_pipeline: mesh_pipeline.clone(),
+    });
+}
 pub struct MaterialPipelineSpecializer {
     pub(crate) pipeline: MaterialPipeline,
     pub(crate) properties: Arc<MaterialProperties>,
@@ -244,11 +247,6 @@ pub struct MaterialPipelineSpecializer {
 
 impl PipelineSpecializer for MaterialPipelineSpecializer {
     type Pipeline = MaterialPipeline;
-
-    fn init_pipeline(world: &World) -> Self::Pipeline {
-        let mesh_pipeline = world.resource::<MeshPipeline>().clone();
-        MaterialPipeline { mesh_pipeline }
-    }
 
     fn create_key(
         view_key: MeshPipelineKey,

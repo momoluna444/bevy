@@ -1901,9 +1901,12 @@ pub fn specialize_shadows(
                     material_key: material.properties.material_key.clone(),
                     type_id: material_instance.asset_id.type_id(),
                 };
+                // NOTE: Currently, `PrepassPipelineSpecializer` does not use the `pass_id`,
+                // it still uses the dedicated `ShaderLabel` for getting shaders.
                 let material_pipeline_specializer = PrepassPipelineSpecializer {
                     pipeline: prepass_pipeline.clone(),
                     properties: material.properties.clone(),
+                    pass_id: Prepass::id(),
                 };
                 let pipeline_id = pipelines.specialize(
                     &pipeline_cache,
