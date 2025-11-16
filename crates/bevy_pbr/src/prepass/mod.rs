@@ -115,9 +115,13 @@ impl Plugin for PrepassPlugin {
             .get_resource::<AnyPrepassPluginLoaded>()
             .is_none();
 
+        // QUESTION:
+        // Why are these guards here?
+        // Why don't they protect systems like `check_prepass_views_need_specialization`?
+        // And, when will we want to add `PrepassPlugin` multiple times?
         if no_prepass_plugin_loaded {
-            app.add_plugins(PassPlugin::<Prepass>::new(self.debug_flags))
-                .insert_resource(AnyPrepassPluginLoaded)
+            app.insert_resource(AnyPrepassPluginLoaded)
+                .add_plugins(PassPlugin::<Prepass>::new(self.debug_flags))
                 // At the start of each frame, last frame's GlobalTransforms become this frame's PreviousGlobalTransforms
                 // and last frame's view projection matrices become this frame's PreviousViewProjections
                 .add_systems(
