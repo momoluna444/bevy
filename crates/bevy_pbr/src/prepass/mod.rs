@@ -10,6 +10,7 @@ use crate::{
     PassId, PassPlugin, PhaseContext, PhaseItemExt, PipelineSpecializer, PreparedMaterial,
     PrepassDrawFunction, PrepassFragmentShader, PrepassVertexShader, RenderLightmap,
     RenderMeshInstanceFlags, RenderPhaseType, SetMaterialBindGroup, SetMeshBindGroup, ShadowView,
+    ViewKeyCache, ViewSpecializationTicks,
 };
 use bevy_app::{App, Plugin, PreUpdate};
 use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer, Handle};
@@ -115,7 +116,8 @@ impl Plugin for PrepassPlugin {
             .is_none();
 
         if no_prepass_plugin_loaded {
-            app.insert_resource(AnyPrepassPluginLoaded)
+            app.add_plugins(PassPlugin::<Prepass>::new(self.debug_flags))
+                .insert_resource(AnyPrepassPluginLoaded)
                 // At the start of each frame, last frame's GlobalTransforms become this frame's PreviousGlobalTransforms
                 // and last frame's view projection matrices become this frame's PreviousViewProjections
                 .add_systems(
@@ -124,16 +126,8 @@ impl Plugin for PrepassPlugin {
                         update_mesh_previous_global_transforms,
                         update_previous_view_data,
                     ),
-                )
-                .add_plugins((
-                    BinnedRenderPhasePlugin::<Opaque3dPrepass, MeshPipeline>::new(self.debug_flags),
-                    BinnedRenderPhasePlugin::<AlphaMask3dPrepass, MeshPipeline>::new(
-                        self.debug_flags,
-                    ),
-                ));
+                );
         }
-
-        app.add_plugins(PassPlugin::<Prepass>::new(self.debug_flags));
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -154,7 +148,7 @@ impl Plugin for PrepassPlugin {
             .init_resource::<SpecializedPrepassMaterialPipelineCache>()
             .add_systems(
                 Render,
-                (check_prepass_views_need_specialization.in_set(PrepareAssets),),
+                check_prepass_views_need_specialization::<Prepass>.in_set(PrepareAssets),
             );
 
         #[cfg(feature = "meshlet")]
@@ -484,9 +478,9 @@ pub struct ViewKeyPrepassCache(HashMap<RetainedViewEntity, MeshPipelineKey>);
 #[derive(Resource, Deref, DerefMut, Default, Clone)]
 pub struct ViewPrepassSpecializationTicks(HashMap<RetainedViewEntity, Tick>);
 
-pub fn check_prepass_views_need_specialization(
-    mut view_key_cache: ResMut<ViewKeyPrepassCache>,
-    mut view_specialization_ticks: ResMut<ViewPrepassSpecializationTicks>,
+pub fn check_prepass_views_need_specialization<P: Pass>(
+    mut view_key_cache: ResMut<ViewKeyCache<P>>,
+    mut view_specialization_ticks: ResMut<ViewSpecializationTicks<P>>,
     mut views: Query<(
         &ExtractedView,
         &Msaa,
