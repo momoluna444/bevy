@@ -1,14 +1,17 @@
 mod prepass_bindings;
 
+use std::any::TypeId;
+
 use crate::{
     alpha_mode_pipeline_key, binding_arrays_are_usable, buffer_layout,
     collect_meshes_for_gpu_building, init_material_pipeline, set_mesh_motion_vector_flags,
     setup_morph_and_skinning_defs, skin, DeferredDrawFunction, DeferredFragmentShader,
     DeferredVertexShader, DrawMesh, EntitySpecializationTicks, ErasedMaterialPipelineKey,
     MaterialPipeline, MaterialProperties, MeshLayouts, MeshPipeline, MeshPipelineKey,
-    OpaqueRendererMethod, PreparedMaterial, PrepassDrawFunction, PrepassFragmentShader,
-    PrepassVertexShader, RenderLightmaps, RenderMaterialInstances, RenderMeshInstanceFlags,
-    RenderMeshInstances, RenderPhaseType, SetMaterialBindGroup, SetMeshBindGroup, ShadowView,
+    OpaqueRendererMethod, Pass, PassId, PhaseItemExt, PipelineSpecializer, PreparedMaterial,
+    PrepassDrawFunction, PrepassFragmentShader, PrepassVertexShader, RenderLightmap,
+    RenderLightmaps, RenderMaterialInstances, RenderMeshInstanceFlags, RenderMeshInstances,
+    RenderPhaseType, SetMaterialBindGroup, SetMeshBindGroup, ShadowView,
 };
 use bevy_app::{App, Plugin, PreUpdate};
 use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer, Handle};
@@ -22,10 +25,11 @@ use bevy_ecs::{
     },
 };
 use bevy_math::{Affine3A, Mat4, Vec4};
-use bevy_mesh::{Mesh, Mesh3d, MeshVertexBufferLayoutRef};
+use bevy_mesh::{BaseMeshPipelineKey, Mesh, Mesh3d, MeshVertexBufferLayoutRef};
 use bevy_render::{
     alpha::AlphaMode,
     batching::gpu_preprocessing::GpuPreprocessingSupport,
+    extract_component::ExtractComponent,
     globals::{GlobalsBuffer, GlobalsUniform},
     mesh::{allocator::MeshAllocator, RenderMesh},
     render_asset::{prepare_assets, RenderAssets},
@@ -61,6 +65,47 @@ use bevy_render::{
     RenderSystems::{PrepareAssets, PrepareResources},
 };
 use bevy_utils::default;
+
+pub struct NewPrepassPlugin;
+
+impl Plugin for NewPrepassPlugin {
+    fn build(&self, app: &mut App) {}
+}
+
+#[derive(Clone, Copy, Default, Component, ExtractComponent)]
+struct Prepass;
+
+impl Pass for Prepass {
+    type ViewKeyCacheSource = Self;
+
+    type Specializer = PrepassPipelineSpecializer;
+
+    type PhaseItems = (Opaque3dPrepass, AlphaMask3dPrepass);
+
+    type RenderCommand = DrawPrepass;
+}
+
+impl PhaseItemExt for Opaque3dPrepass {
+    type RenderPhase = BinnedRenderPhase<Self>;
+    type RenderPhases = ViewBinnedRenderPhases<Self>;
+    type PhasePlugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
+    const PHASE_TYPES: RenderPhaseType = RenderPhaseType::Opaque;
+
+    fn queue(render_phase: &mut Self::RenderPhase, context: &crate::PhaseContext) {
+        todo!()
+    }
+}
+
+impl PhaseItemExt for AlphaMask3dPrepass {
+    type RenderPhase = BinnedRenderPhase<Self>;
+    type RenderPhases = ViewBinnedRenderPhases<Self>;
+    type PhasePlugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
+    const PHASE_TYPES: RenderPhaseType = RenderPhaseType::AlphaMask;
+
+    fn queue(render_phase: &mut Self::RenderPhase, context: &crate::PhaseContext) {
+        todo!()
+    }
+}
 
 /// Sets up everything required to use the prepass pipeline.
 ///
@@ -332,6 +377,102 @@ pub fn init_prepass_pipeline(
 pub struct PrepassPipelineSpecializer {
     pub(crate) pipeline: PrepassPipeline,
     pub(crate) properties: Arc<MaterialProperties>,
+    pub(crate) pass_id: PassId,
+}
+
+impl PipelineSpecializer for PrepassPipelineSpecializer {
+    type Pipeline = PrepassPipeline;
+
+    fn init_pipeline(world: &World) -> Self::Pipeline {
+        todo!()
+    }
+
+    fn create_key(
+        view_key: MeshPipelineKey,
+        base_mesh_key: &BaseMeshPipelineKey,
+        mesh_instance_flags: &RenderMeshInstanceFlags,
+        material: &PreparedMaterial,
+        lightmap: Option<&RenderLightmap>,
+        has_crossfade: bool,
+        type_id: TypeId,
+    ) -> Option<Self::Key> {
+        let mut mesh_key = view_key | MeshPipelineKey::from_bits_retain(base_mesh_key.bits());
+        todo!()
+        // let alpha_mode = material.properties.alpha_mode;
+        // match alpha_mode {
+        //     AlphaMode::Opaque | AlphaMode::AlphaToCoverage | AlphaMode::Mask(_) => {
+        //         mesh_key |= alpha_mode_pipeline_key(alpha_mode, &Msaa::from_samples(view_key.msaa_samples()));
+        //     }
+        //     AlphaMode::Blend | AlphaMode::Premultiplied | AlphaMode::Add | AlphaMode::Multiply => {
+        //         // In case this material was previously in a valid alpha_mode, remove it to
+        //         // stop the queue system from assuming its retained cache to be valid.
+        //         view_specialized_material_pipeline_cache.remove(visible_entity);
+        //         continue;
+        //     }
+        // }
+
+        // if material.properties.reads_view_transmission_texture {
+        //     // No-op: Materials reading from `ViewTransmissionTexture` are not rendered in the `Opaque3d`
+        //     // phase, and are therefore also excluded from the prepass much like alpha-blended materials.
+        //     view_specialized_material_pipeline_cache.remove(visible_entity);
+        //     continue;
+        // }
+
+        // let forward = match material.properties.render_method {
+        //     OpaqueRendererMethod::Forward => true,
+        //     OpaqueRendererMethod::Deferred => false,
+        //     OpaqueRendererMethod::Auto => unreachable!(),
+        // };
+
+        // let deferred = deferred_prepass.is_some() && !forward;
+
+        // if deferred {
+        //     mesh_key |= MeshPipelineKey::DEFERRED_PREPASS;
+        // }
+
+        // if let Some(lightmap) = render_lightmaps.render_lightmaps.get(visible_entity) {
+        //     // Even though we don't use the lightmap in the forward prepass, the
+        //     // `SetMeshBindGroup` render command will bind the data for it. So
+        //     // we need to include the appropriate flag in the mesh pipeline key
+        //     // to ensure that the necessary bind group layout entries are
+        //     // present.
+        //     mesh_key |= MeshPipelineKey::LIGHTMAPPED;
+
+        //     if lightmap.bicubic_sampling && deferred {
+        //         mesh_key |= MeshPipelineKey::LIGHTMAP_BICUBIC_SAMPLING;
+        //     }
+        // }
+
+        // if render_visibility_ranges.entity_has_crossfading_visibility_ranges(*visible_entity) {
+        //     mesh_key |= MeshPipelineKey::VISIBILITY_RANGE_DITHER;
+        // }
+
+        // // If the previous frame has skins or morph targets, note that.
+        // if motion_vector_prepass.is_some() {
+        //     if mesh_instance
+        //         .flags
+        //         .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_SKIN)
+        //     {
+        //         mesh_key |= MeshPipelineKey::HAS_PREVIOUS_SKIN;
+        //     }
+        //     if mesh_instance
+        //         .flags
+        //         .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_MORPH)
+        //     {
+        //         mesh_key |= MeshPipelineKey::HAS_PREVIOUS_MORPH;
+        //     }
+        // }
+
+        // let erased_key = ErasedMaterialPipelineKey {
+        //     mesh_key,
+        //     material_key: material.properties.material_key.clone(),
+        //     type_id: material_instance.asset_id.type_id(),
+        // };
+    }
+
+    fn new(pipeline: &Self::Pipeline, material: &PreparedMaterial, pass_id: PassId) -> Self {
+        todo!()
+    }
 }
 
 impl SpecializedMeshPipeline for PrepassPipelineSpecializer {

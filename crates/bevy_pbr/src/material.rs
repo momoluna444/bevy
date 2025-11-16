@@ -14,6 +14,7 @@ use bevy_core_pipeline::tonemapping::Tonemapping;
 use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::change_detection::Tick;
 use bevy_ecs::system::{ReadOnlySystemParam, SystemChangeTick};
+use bevy_ecs::world;
 use bevy_ecs::{
     prelude::*,
     system::{
@@ -406,7 +407,7 @@ impl<P: Pass> Plugin for PassPlugin<P> {
             .init_resource::<RenderMaterialInstances>()
             .init_resource::<MaterialBindGroupAllocators>()
             .init_resource::<EntitiesNeedingSweep>()
-            .add_systems(RenderStartup, init_material_pipeline)
+            .add_systems(RenderStartup, init_material_pipeline::<P>)
             .add_systems(
                 ExtractSchedule,
                 late_sweep_entities_needing_specialization::<P>
@@ -441,24 +442,18 @@ impl<P: Pass> Plugin for PassPlugin<P> {
     }
 }
 
-pub fn add_pass_phase_plugins<P>(app: &mut App, debug_flags: RenderDebugFlags)
-where
-    P: Pass,
-{
+pub fn add_pass_phase_plugins<P: Pass>(app: &mut App, debug_flags: RenderDebugFlags) {
     let valid_phase_count = P::PhaseItems::valid_phase_count();
 
     if valid_phase_count > 0 {
         app.add_plugins(PassPhasePlugin::<P, Phase1<P>>::new(debug_flags));
     }
-
     if valid_phase_count > 1 {
         app.add_plugins(PassPhasePlugin::<P, Phase2<P>>::new(debug_flags));
     }
-
     if valid_phase_count > 2 {
         app.add_plugins(PassPhasePlugin::<P, Phase3<P>>::new(debug_flags));
     }
-
     if valid_phase_count > 3 {
         app.add_plugins(PassPhasePlugin::<P, Phase4<P>>::new(debug_flags));
     }
@@ -631,10 +626,8 @@ pub struct MaterialPipeline {
     pub mesh_pipeline: MeshPipeline,
 }
 
-pub fn init_material_pipeline(mut commands: Commands, mesh_pipeline: Res<MeshPipeline>) {
-    commands.insert_resource(MaterialPipeline {
-        mesh_pipeline: mesh_pipeline.clone(),
-    });
+pub fn init_material_pipeline<P: Pass>(mut commands: Commands, world: &World) {
+    commands.insert_resource(P::Specializer::init_pipeline(world));
 }
 
 /// Inserts `PhaseItem`'s `DrawFunction`s into [`PassPhaseDrawFunctions`] by their [`RenderPhaseType`].
@@ -1200,7 +1193,7 @@ pub fn check_entities_needing_specialization<M>(
 pub trait PipelineSpecializer: SpecializedMeshPipeline {
     type Pipeline: Resource;
 
-    fn new(pipeline: &Self::Pipeline, material: &PreparedMaterial, pass_id: PassId) -> Self;
+    fn init_pipeline(world: &World) -> Self::Pipeline;
 
     fn create_key(
         view_key: MeshPipelineKey,
@@ -1211,6 +1204,8 @@ pub trait PipelineSpecializer: SpecializedMeshPipeline {
         has_crossfade: bool,
         type_id: TypeId,
     ) -> Option<Self::Key>;
+
+    fn new(pipeline: &Self::Pipeline, material: &PreparedMaterial, pass_id: PassId) -> Self;
 }
 
 #[derive(Resource, Deref, DerefMut, Default, Debug, Clone)]
@@ -1334,7 +1329,9 @@ pub fn specialize_material_meshes<P: Pass>(
                 continue;
             };
 
-            // Filter entities that not belong to this pass.
+            // Because users can add materials whose ShaderSets do not overlap at all,
+            // we need to filter out the entities that do not belong to this pass.
+            // Maybe we can do this better with VisibilityClass.
             if let None = material
                 .properties
                 .get_draw_function(MaterialDrawFunction(P::id()))
@@ -1427,7 +1424,7 @@ where
 //     type Plugin = BinnedRenderPhasePlugin<BPI, GFBD>;
 // }
 
-pub struct PhaseParams<'a> {
+pub struct PhaseContext<'a> {
     pub mesh_instance: &'a RenderMeshQueueData<'a>,
     pub material: &'a PreparedMaterial,
     pub mesh_allocator: &'a Res<'a, MeshAllocator>,
@@ -1447,11 +1444,11 @@ pub trait PhaseItemExt: PhaseItem {
 
     const PHASE_TYPES: RenderPhaseType;
 
-    fn queue(render_phase: &mut Self::RenderPhase, params: &PhaseParams);
+    fn queue(render_phase: &mut Self::RenderPhase, context: &PhaseContext);
 }
 
 pub trait RenderPhase {
-    fn add(&mut self, params: &PhaseParams);
+    fn add(&mut self, context: &PhaseContext);
 
     fn validate_cached_entity(
         &mut self,
@@ -1474,8 +1471,8 @@ where
     BPI: BinnedPhaseItem + PhaseItemExt<RenderPhase = BinnedRenderPhase<BPI>>,
 {
     #[inline]
-    fn add(&mut self, params: &PhaseParams) {
-        BPI::queue(self, params);
+    fn add(&mut self, context: &PhaseContext) {
+        BPI::queue(self, context);
     }
 
     #[inline]
@@ -1493,8 +1490,8 @@ where
     SPI: SortedPhaseItem + PhaseItemExt<RenderPhase = SortedRenderPhase<SPI>>,
 {
     #[inline]
-    fn add(&mut self, params: &PhaseParams) {
-        SPI::queue(self, params);
+    fn add(&mut self, context: &PhaseContext) {
+        SPI::queue(self, context);
     }
 
     #[inline]
@@ -1570,6 +1567,10 @@ pub fn queue_material_meshes<P: Pass>(
             .as_mut()
             .and_then(|view_render_phases| view_render_phases.get_mut(&view.retained_view_entity));
 
+        if phase1.is_none() && phase2.is_none() && phase3.is_none() && phase4.is_none() {
+            continue;
+        }
+
         let Some(view_specialized_material_pipeline_cache) =
             specialized_material_pipeline_cache.get(&view.retained_view_entity)
         else {
@@ -1587,6 +1588,7 @@ pub fn queue_material_meshes<P: Pass>(
             };
 
             // Skip the entity if it's cached in a bin and up to date.
+            // NOTE: SortedRenderPhase will always return false.
             let mut any_cached = false;
             if let Some(phase1) = phase1.as_mut() {
                 any_cached |= phase1.validate_cached_entity(*visible_entity, current_change_tick);
@@ -1623,7 +1625,7 @@ pub fn queue_material_meshes<P: Pass>(
                 continue;
             };
 
-            let params = PhaseParams {
+            let context = PhaseContext {
                 mesh_instance: &mesh_instance,
                 material,
                 mesh_allocator: &mesh_allocator,
@@ -1639,19 +1641,19 @@ pub fn queue_material_meshes<P: Pass>(
             let phase_type = material.properties.render_phase_type;
             if Phase1::<P>::PHASE_TYPES.contains(phase_type) {
                 if let Some(phase1) = phase1.as_mut() {
-                    phase1.add(&params);
+                    phase1.add(&context);
                 }
             } else if Phase2::<P>::PHASE_TYPES.contains(phase_type) {
                 if let Some(phase2) = phase2.as_mut() {
-                    phase2.add(&params);
+                    phase2.add(&context);
                 }
             } else if Phase3::<P>::PHASE_TYPES.contains(phase_type) {
                 if let Some(phase3) = phase3.as_mut() {
-                    phase3.add(&params);
+                    phase3.add(&context);
                 }
             } else if Phase4::<P>::PHASE_TYPES.contains(phase_type) {
                 if let Some(phase4) = phase4.as_mut() {
-                    phase4.add(&params);
+                    phase4.add(&context);
                 }
             };
         }

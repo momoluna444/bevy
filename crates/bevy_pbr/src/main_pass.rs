@@ -43,7 +43,7 @@ use crate::{
     DistanceFog, DrawMaterial, DrawPrepass, ErasedMaterialPipelineKey, LightKeyCache,
     LightSpecializationTicks, MaterialFragmentShader, MaterialPipeline, MaterialProperties,
     MaterialVertexShader, MeshPipeline, MeshPipelineKey, OpaqueRendererMethod, Pass, PassId,
-    PassPlugin, PhaseItemExt, PhaseParams, PipelineSpecializer, PreparedMaterial,
+    PassPlugin, PhaseContext, PhaseItemExt, PipelineSpecializer, PreparedMaterial,
     PrepassPipelinePlugin, PrepassPlugin, RenderLightmap, RenderMeshInstanceFlags, RenderPhaseType,
     RenderViewLightProbes, ScreenSpaceAmbientOcclusion, Shadow,
     SpecializedShadowMaterialPipelineCache, ViewKeyCache, ViewSpecializationTicks,
@@ -236,7 +236,6 @@ pub fn check_views_need_specialization<P: Pass>(
         }
     }
 }
-
 pub struct MaterialPipelineSpecializer {
     pub(crate) pipeline: MaterialPipeline,
     pub(crate) properties: Arc<MaterialProperties>,
@@ -246,12 +245,9 @@ pub struct MaterialPipelineSpecializer {
 impl PipelineSpecializer for MaterialPipelineSpecializer {
     type Pipeline = MaterialPipeline;
 
-    fn new(pipeline: &Self::Pipeline, material: &PreparedMaterial, pass_id: PassId) -> Self {
-        MaterialPipelineSpecializer {
-            pipeline: pipeline.clone(),
-            properties: material.properties.clone(),
-            pass_id,
-        }
+    fn init_pipeline(world: &World) -> Self::Pipeline {
+        let mesh_pipeline = world.resource::<MeshPipeline>().clone();
+        MaterialPipeline { mesh_pipeline }
     }
 
     fn create_key(
@@ -301,6 +297,14 @@ impl PipelineSpecializer for MaterialPipelineSpecializer {
             material_key,
             type_id,
         })
+    }
+
+    fn new(pipeline: &Self::Pipeline, material: &PreparedMaterial, pass_id: PassId) -> Self {
+        MaterialPipelineSpecializer {
+            pipeline: pipeline.clone(),
+            properties: material.properties.clone(),
+            pass_id,
+        }
     }
 }
 
@@ -366,42 +370,42 @@ impl PhaseItemExt for Opaque3d {
     type PhasePlugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
     const PHASE_TYPES: RenderPhaseType = RenderPhaseType::Opaque;
 
-    fn queue(render_phase: &mut Self::RenderPhase, params: &PhaseParams) {
-        if params.material.properties.render_method == OpaqueRendererMethod::Deferred {
+    fn queue(render_phase: &mut Self::RenderPhase, context: &PhaseContext) {
+        if context.material.properties.render_method == OpaqueRendererMethod::Deferred {
             // Even though we aren't going to insert the entity into
             // a bin, we still want to update its cache entry. That
             // way, we know we don't need to re-examine it in future
             // frames.
-            render_phase.update_cache(params.main_entity, None, params.current_change_tick);
+            render_phase.update_cache(context.main_entity, None, context.current_change_tick);
             return;
         }
-        let (vertex_slab, index_slab) = params
+        let (vertex_slab, index_slab) = context
             .mesh_allocator
-            .mesh_slabs(&params.mesh_instance.mesh_asset_id);
+            .mesh_slabs(&context.mesh_instance.mesh_asset_id);
 
         render_phase.add(
             Opaque3dBatchSetKey {
-                pipeline: params.pipeline,
-                draw_function: params.draw_function,
-                material_bind_group_index: Some(params.material.binding.group.0),
+                pipeline: context.pipeline,
+                draw_function: context.draw_function,
+                material_bind_group_index: Some(context.material.binding.group.0),
                 vertex_slab: vertex_slab.unwrap_or_default(),
                 index_slab,
-                lightmap_slab: params
+                lightmap_slab: context
                     .mesh_instance
                     .shared
                     .lightmap_slab_index
                     .map(|index| *index),
             },
             Opaque3dBinKey {
-                asset_id: params.mesh_instance.mesh_asset_id.into(),
+                asset_id: context.mesh_instance.mesh_asset_id.into(),
             },
-            (params.entity, params.main_entity),
-            params.mesh_instance.current_uniform_index,
+            (context.entity, context.main_entity),
+            context.mesh_instance.current_uniform_index,
             BinnedRenderPhaseType::mesh(
-                params.mesh_instance.should_batch(),
-                &params.gpu_preprocessing_support,
+                context.mesh_instance.should_batch(),
+                &context.gpu_preprocessing_support,
             ),
-            params.current_change_tick,
+            context.current_change_tick,
         );
     }
 }
@@ -412,29 +416,29 @@ impl PhaseItemExt for AlphaMask3d {
     type PhasePlugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
     const PHASE_TYPES: RenderPhaseType = RenderPhaseType::AlphaMask;
 
-    fn queue(render_phase: &mut Self::RenderPhase, params: &PhaseParams) {
-        let (vertex_slab, index_slab) = params
+    fn queue(render_phase: &mut Self::RenderPhase, context: &PhaseContext) {
+        let (vertex_slab, index_slab) = context
             .mesh_allocator
-            .mesh_slabs(&params.mesh_instance.mesh_asset_id);
+            .mesh_slabs(&context.mesh_instance.mesh_asset_id);
 
         render_phase.add(
             OpaqueNoLightmap3dBatchSetKey {
-                pipeline: params.pipeline,
-                draw_function: params.draw_function,
-                material_bind_group_index: Some(params.material.binding.group.0),
+                pipeline: context.pipeline,
+                draw_function: context.draw_function,
+                material_bind_group_index: Some(context.material.binding.group.0),
                 vertex_slab: vertex_slab.unwrap_or_default(),
                 index_slab,
             },
             OpaqueNoLightmap3dBinKey {
-                asset_id: params.mesh_instance.mesh_asset_id.into(),
+                asset_id: context.mesh_instance.mesh_asset_id.into(),
             },
-            (params.entity, params.main_entity),
-            params.mesh_instance.current_uniform_index,
+            (context.entity, context.main_entity),
+            context.mesh_instance.current_uniform_index,
             BinnedRenderPhaseType::mesh(
-                params.mesh_instance.should_batch(),
-                &params.gpu_preprocessing_support,
+                context.mesh_instance.should_batch(),
+                &context.gpu_preprocessing_support,
             ),
-            params.current_change_tick,
+            context.current_change_tick,
         );
     }
 }
@@ -445,19 +449,19 @@ impl PhaseItemExt for Transmissive3d {
     type PhasePlugin = SortedRenderPhasePlugin<Self, MeshPipeline>;
     const PHASE_TYPES: RenderPhaseType = RenderPhaseType::Transmissive;
 
-    fn queue(render_phase: &mut Self::RenderPhase, params: &PhaseParams) {
-        let (_, index_slab) = params
+    fn queue(render_phase: &mut Self::RenderPhase, context: &PhaseContext) {
+        let (_, index_slab) = context
             .mesh_allocator
-            .mesh_slabs(&params.mesh_instance.mesh_asset_id);
-        let distance = params
+            .mesh_slabs(&context.mesh_instance.mesh_asset_id);
+        let distance = context
             .rangefinder
-            .distance_translation(&params.mesh_instance.translation)
-            + params.material.properties.depth_bias;
+            .distance_translation(&context.mesh_instance.translation)
+            + context.material.properties.depth_bias;
 
         render_phase.add(Transmissive3d {
-            entity: (params.entity, params.main_entity),
-            draw_function: params.draw_function,
-            pipeline: params.pipeline,
+            entity: (context.entity, context.main_entity),
+            draw_function: context.draw_function,
+            pipeline: context.pipeline,
             distance,
             batch_range: 0..1,
             extra_index: PhaseItemExtraIndex::None,
@@ -472,19 +476,19 @@ impl PhaseItemExt for Transparent3d {
     type PhasePlugin = SortedRenderPhasePlugin<Self, MeshPipeline>;
     const PHASE_TYPES: RenderPhaseType = RenderPhaseType::Transparent;
 
-    fn queue(render_phase: &mut Self::RenderPhase, params: &PhaseParams) {
-        let (_, index_slab) = params
+    fn queue(render_phase: &mut Self::RenderPhase, context: &PhaseContext) {
+        let (_, index_slab) = context
             .mesh_allocator
-            .mesh_slabs(&params.mesh_instance.mesh_asset_id);
-        let distance = params
+            .mesh_slabs(&context.mesh_instance.mesh_asset_id);
+        let distance = context
             .rangefinder
-            .distance_translation(&params.mesh_instance.translation)
-            + params.material.properties.depth_bias;
+            .distance_translation(&context.mesh_instance.translation)
+            + context.material.properties.depth_bias;
 
         render_phase.add(Transparent3d {
-            entity: (params.entity, params.main_entity),
-            draw_function: params.draw_function,
-            pipeline: params.pipeline,
+            entity: (context.entity, context.main_entity),
+            draw_function: context.draw_function,
+            pipeline: context.pipeline,
             distance,
             batch_range: 0..1,
             extra_index: PhaseItemExtraIndex::None,

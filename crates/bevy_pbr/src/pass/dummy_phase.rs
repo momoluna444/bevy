@@ -4,13 +4,14 @@ use bevy_core_pipeline::core_3d::{Opaque3dBatchSetKey, Opaque3dBinKey};
 use bevy_ecs::entity::Entity;
 use bevy_render::{
     render_phase::{
-        BinnedPhaseItem, BinnedRenderPhase, BinnedRenderPhasePlugin, DrawFunctionId, PhaseItem,
-        PhaseItemExtraIndex, ViewBinnedRenderPhases,
+        BinnedPhaseItem, BinnedRenderPhase, BinnedRenderPhasePlugin, CachedRenderPipelinePhaseItem,
+        DrawFunctionId, PhaseItem, PhaseItemExtraIndex, ViewBinnedRenderPhases,
     },
+    render_resource::CachedRenderPipelineId,
     sync_world::MainEntity,
 };
 
-use crate::{MeshPipeline, Pass, PhaseItemExt, PhaseItems, PhaseParams, RenderPhaseType};
+use crate::{MeshPipeline, Pass, PhaseContext, PhaseItemExt, PhaseItems, RenderPhaseType};
 
 const DUMMY_PHASE_ERROR: &str = "Dummy phase should never be instantiated.";
 
@@ -19,7 +20,6 @@ macro_rules! define_dummy_phase {
         pub struct $name<P>(PhantomData<P>);
 
         impl<P: Pass> PhaseItemExt for $name<P> {
-
             // Important: It must be empty to ensure it does not match any material.
             const PHASE_TYPES: RenderPhaseType = RenderPhaseType::empty();
 
@@ -27,7 +27,7 @@ macro_rules! define_dummy_phase {
             type RenderPhases = ViewBinnedRenderPhases<Self>;
             type PhasePlugin = BinnedRenderPhasePlugin<Self, MeshPipeline>;
 
-            fn queue(_render_phase: &mut Self::RenderPhase, _params: &PhaseParams) {
+            fn queue(_render_phase: &mut Self::RenderPhase, _context: &PhaseContext) {
                 panic!("{}", DUMMY_PHASE_ERROR)
             }
         }
@@ -75,6 +75,12 @@ macro_rules! define_dummy_phase {
                 _batch_range: Range<u32>,
                 _extra_index: PhaseItemExtraIndex,
             ) -> Self {
+                panic!("{}", DUMMY_PHASE_ERROR)
+            }
+        }
+
+        impl<P: Pass> CachedRenderPipelinePhaseItem for $name<P> {
+            fn cached_pipeline(&self) -> CachedRenderPipelineId {
                 panic!("{}", DUMMY_PHASE_ERROR)
             }
         }
