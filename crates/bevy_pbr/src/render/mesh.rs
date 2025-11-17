@@ -6,11 +6,10 @@ use bevy_asset::{embedded_asset, load_embedded_asset, AssetId};
 use bevy_camera::{
     primitives::Aabb,
     visibility::{NoFrustumCulling, RenderLayers, ViewVisibility, VisibilityRange},
-    Camera, Camera3d, Projection,
+    Camera,
 };
 use bevy_core_pipeline::{
-    core_3d::{AlphaMask3d, Opaque3d, Transmissive3d, Transparent3d, CORE_3D_DEPTH_FORMAT},
-    deferred::{AlphaMask3dDeferred, Opaque3dDeferred},
+    core_3d::CORE_3D_DEPTH_FORMAT,
     oit::{prepare_oit_buffers, OrderIndependentTransparencySettingsOffset},
     prepass::MotionVectorPrepass,
 };
@@ -22,10 +21,7 @@ use bevy_ecs::{
     system::{lifetimeless::*, SystemParamItem, SystemState},
 };
 use bevy_image::{BevyDefault, ImageSampler, TextureFormatPixelInfo};
-use bevy_light::{
-    EnvironmentMapLight, IrradianceVolume, NotShadowCaster, NotShadowReceiver,
-    ShadowFilteringMethod, TransmittedShadowReceiver,
-};
+use bevy_light::{NotShadowCaster, NotShadowReceiver, TransmittedShadowReceiver};
 use bevy_math::{Affine3, Rect, UVec2, Vec3, Vec4};
 use bevy_mesh::{
     skinning::SkinnedMesh, BaseMeshPipelineKey, Mesh, Mesh3d, MeshTag, MeshVertexBufferLayoutRef,
@@ -45,16 +41,13 @@ use bevy_render::{
     render_asset::RenderAssets,
     render_phase::{
         BinnedRenderPhasePlugin, InputUniformIndex, PhaseItem, PhaseItemExtraIndex, RenderCommand,
-        RenderCommandResult, SortedRenderPhasePlugin, TrackedRenderPass,
+        RenderCommandResult, TrackedRenderPass,
     },
     render_resource::*,
     renderer::{RenderAdapter, RenderDevice, RenderQueue},
     sync_world::MainEntityHashSet,
     texture::{DefaultImageSampler, GpuImage},
-    view::{
-        self, NoIndirectDrawing, RenderVisibilityRanges, RetainedViewEntity, ViewTarget,
-        ViewUniformOffset,
-    },
+    view::{self, NoIndirectDrawing, RenderVisibilityRanges, ViewTarget, ViewUniformOffset},
     Extract,
 };
 use bevy_shader::{load_shader_library, Shader, ShaderDefVal, ShaderSettings};
@@ -76,17 +69,7 @@ use crate::{
     },
     *,
 };
-use bevy_core_pipeline::oit::OrderIndependentTransparencySettings;
-use bevy_core_pipeline::prepass::{DeferredPrepass, DepthPrepass, NormalPrepass};
-use bevy_core_pipeline::tonemapping::{DebandDither, Tonemapping};
-use bevy_ecs::change_detection::Tick;
-use bevy_ecs::system::SystemChangeTick;
-use bevy_render::camera::TemporalJitter;
-use bevy_render::prelude::Msaa;
 use bevy_render::sync_world::{MainEntity, MainEntityHashMap};
-use bevy_render::view::ExtractedView;
-use bevy_render::RenderSystems::PrepareAssets;
-
 use bytemuck::{Pod, Zeroable};
 use nonmax::{NonMaxU16, NonMaxU32};
 use smallvec::{smallvec, SmallVec};

@@ -34,9 +34,9 @@ mod extended_material;
 mod fog;
 mod light_probe;
 mod lightmap;
-mod pass;
 mod material;
 mod material_bind_groups;
+mod dummy_phase;
 mod main_pass;
 mod medium;
 mod mesh_material;
@@ -129,7 +129,7 @@ pub mod graph {
     }
 }
 
-use crate::{deferred::DeferredPbrLightingPlugin, graph::NodePbr, main_pass::MainPassPlugin};
+use crate::{deferred::DeferredPbrLightingPlugin, graph::NodePbr};
 use bevy_app::prelude::*;
 use bevy_asset::{AssetApp, AssetPath, Assets, Handle, RenderAssetUsages};
 use bevy_core_pipeline::core_3d::graph::{Core3d, Node3d};

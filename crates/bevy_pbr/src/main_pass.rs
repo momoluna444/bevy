@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::*;
 use bevy_app::Plugin;
 use bevy_camera::{Camera3d, Projection};
 use bevy_core_pipeline::{
@@ -37,27 +38,14 @@ use bevy_render::{
 };
 use bevy_shader::ShaderDefVal;
 
-use crate::{
-    alpha_mode_pipeline_key, check_views_lights_need_specialization, prepare_lights, queue_shadows,
-    screen_space_specular_transmission_pipeline_key, specialize_shadows, tonemapping_pipeline_key,
-    DistanceFog, DrawMaterial, DrawPrepass, ErasedMaterialPipelineKey, LightKeyCache,
-    LightSpecializationTicks, MaterialFragmentShader, MaterialPipeline, MaterialProperties,
-    MaterialVertexShader, MeshPipeline, MeshPipelineKey, OpaqueRendererMethod, Pass, PassId,
-    PassPlugin, PhaseContext, PhaseItemExt, PipelineSpecializer, PreparedMaterial,
-    PrepassPipelinePlugin, PrepassPlugin, RenderMeshInstanceFlags, RenderPhaseType,
-    RenderViewLightProbes, ScreenSpaceAmbientOcclusion, Shadow,
-    SpecializedShadowMaterialPipelineCache, SpecializerKeyContext, ViewKeyCache,
-    ViewSpecializationTicks, MATERIAL_BIND_GROUP_INDEX,
-};
-
 #[derive(Default)]
 pub struct MainPassPlugin {
     pub debug_flags: RenderDebugFlags,
 }
 impl Plugin for MainPassPlugin {
-    fn build(&self, app: &mut bevy_app::App) {
+    fn build(&self, app: &mut App) {
         app.register_required_components::<Camera3d, MainPass>()
-            .add_plugins(PassPlugin::<MainPass>::new(self.debug_flags))
+            .add_plugins(MeshPassPlugin::<MainPass>::new(self.debug_flags))
             .add_plugins((PrepassPipelinePlugin, PrepassPlugin::new(self.debug_flags)));
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
@@ -96,18 +84,15 @@ impl Plugin for MainPassPlugin {
 #[derive(Clone, Copy, Default, Component, ExtractComponent)]
 pub struct MainPass;
 
-impl Pass for MainPass {
-    type ViewKeyCacheSource = Self;
-
+impl MeshPass for MainPass {
+    type ViewKeySource = Self;
     type Specializer = MaterialPipelineSpecializer;
-
     type PhaseItems = (Opaque3d, AlphaMask3d, Transmissive3d, Transparent3d);
-
     type RenderCommand = DrawMaterial;
 }
 
 // TODO: Redesign
-pub fn check_views_need_specialization<P: Pass>(
+pub fn check_views_need_specialization<P: MeshPass>(
     mut view_key_cache: ResMut<ViewKeyCache<P>>,
     mut view_specialization_ticks: ResMut<ViewSpecializationTicks<P>>,
     mut views: Query<
@@ -253,7 +238,7 @@ pub struct MaterialPipelineSpecializer {
 impl PipelineSpecializer for MaterialPipelineSpecializer {
     type Pipeline = MaterialPipeline;
 
-    fn create_key(context: &SpecializerKeyContext) -> Option<Self::Key> {
+    fn create_key(context: &SpecializerKeyContext) -> Self::Key {
         let mut mesh_pipeline_key_bits = context.material.properties.mesh_pipeline_key_bits;
         mesh_pipeline_key_bits.insert(alpha_mode_pipeline_key(
             context.material.properties.alpha_mode,
@@ -296,11 +281,11 @@ impl PipelineSpecializer for MaterialPipelineSpecializer {
 
         let material_key = context.material.properties.material_key.clone();
 
-        Some(Self::Key {
+        Self::Key {
             mesh_key,
             material_key,
             type_id: context.material_asset_id,
-        })
+        }
     }
 
     fn new(pipeline: &Self::Pipeline, material: &PreparedMaterial, pass_id: PassId) -> Self {

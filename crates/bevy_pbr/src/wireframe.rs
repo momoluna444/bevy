@@ -1,9 +1,9 @@
 use crate::{
     DrawMesh, MeshPipeline, MeshPipelineKey, RenderMeshInstanceFlags, RenderMeshInstances,
     SetMeshBindGroup, SetMeshViewBindGroup, SetMeshViewBindingArrayBindGroup, ViewKeyCache,
-    ViewSpecializationTicks, main_pass::MainPass,
+    ViewSpecializationTicks, MainPass,
 };
-use bevy_app::{App, Main, Plugin, PostUpdate, Startup, Update};
+use bevy_app::{App, Plugin, PostUpdate, Startup, Update};
 use bevy_asset::{
     embedded_asset, load_embedded_asset, prelude::AssetChanged, AsAssetId, Asset, AssetApp,
     AssetEventSystems, AssetId, AssetServer, Assets, Handle, UntypedAssetId,

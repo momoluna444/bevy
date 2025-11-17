@@ -7,7 +7,7 @@ use bevy::{
         SystemChangeTick, SystemParamItem, lifetimeless::{SRes, SResMut}
     },
     pbr::{
-        DrawMaterial, EntitiesNeedingSpecialization, EntitySpecializationTickPair, EntitySpecializationTicks, MainPass, MaterialBindGroupAllocator, MaterialBindGroupAllocators, MaterialDrawFunction, MaterialExtractEntitiesNeedingSpecializationSystems, MaterialExtractionSystems, MaterialFragmentShader, MaterialProperties, Pass, PreparedMaterial, RenderMaterialBindings, RenderMaterialInstance, RenderMaterialInstances, SpecializedMaterialPipelineCache, late_sweep_material_instances
+        DrawMaterial, EntitiesNeedingSpecialization, EntitySpecializationTickPair, EntitySpecializationTicks, MainPass, MaterialBindGroupAllocator, MaterialBindGroupAllocators, MaterialExtractEntitiesNeedingSpecializationSystems, MaterialExtractionSystems, MaterialFragmentShader, MaterialProperties, MeshPass, Phase1DrawFunction, PreparedMaterial, RenderMaterialBindings, RenderMaterialInstance, RenderMaterialInstances, SpecializedMaterialPipelineCache, late_sweep_material_instances
     },
     platform::collections::hash_map::Entry,
     prelude::*,
@@ -183,8 +183,11 @@ impl ErasedRenderAsset for ImageMaterial {
             material_layout: Some(material_layout),
             ..Default::default()
         };
-        properties.add_draw_function(MaterialDrawFunction(MainPass::id()), draw_function_id);
-        properties.add_shader(MaterialFragmentShader(MainPass::id()), asset_server.load(SHADER_ASSET_PATH));
+        properties.add_draw_function(Phase1DrawFunction(MainPass::id()), draw_function_id);
+        properties.add_shader(
+            MaterialFragmentShader(MainPass::id()),
+            asset_server.load(SHADER_ASSET_PATH),
+        );
 
         Ok(PreparedMaterial {
             binding,

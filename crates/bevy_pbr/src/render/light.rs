@@ -1765,7 +1765,7 @@ pub fn specialize_shadows(
         Res<RenderMaterialInstances>,
     ),
     shadow_render_phases: Res<ViewBinnedRenderPhases<Shadow>>,
-    mut pipelines: ResMut<SpecializedMeshPipelines<PrepassPipelineSpecializer>>,
+    mut pipelines: ResMut<MeshPassSpecializedMeshPipelines<Prepass, PrepassPipelineSpecializer>>,
     pipeline_cache: Res<PipelineCache>,
     render_lightmaps: Res<RenderLightmaps>,
     view_lights: Query<(Entity, &ViewLightEntities), With<ExtractedView>>,
@@ -1909,11 +1909,12 @@ pub fn specialize_shadows(
                     type_id: material_instance.asset_id.type_id(),
                 };
                 // NOTE: Currently, `PrepassPipelineSpecializer` does not use the `pass_id`,
-                // it still uses the dedicated `ShaderLabel` for getting shaders.
+                // it still uses the dedicated `ShaderLabel` for getting shaders. Once
+                // `Shadow` pass gets its own `PassId`, this should be changed.
                 let material_pipeline_specializer = PrepassPipelineSpecializer {
                     pipeline: prepass_pipeline.clone(),
                     properties: material.properties.clone(),
-                    pass_id: Prepass::id(),
+                    _pass_id: Prepass::id(),
                 };
                 let pipeline_id = pipelines.specialize(
                     &pipeline_cache,

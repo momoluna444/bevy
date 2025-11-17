@@ -11,7 +11,7 @@ use bevy_render::{
     sync_world::MainEntity,
 };
 
-use crate::{MeshPipeline, Pass, PhaseContext, PhaseItemExt, PhaseItems, RenderPhaseType};
+use crate::{MeshPipeline, MeshPass, PhaseContext, PhaseItemExt, PhaseItems, RenderPhaseType};
 
 const DUMMY_PHASE_ERROR: &str = "Dummy phase should never be instantiated.";
 
@@ -19,7 +19,7 @@ macro_rules! define_dummy_phase {
     ($name:ident) => {
         pub struct $name<P>(PhantomData<P>);
 
-        impl<P: Pass> PhaseItemExt for $name<P> {
+        impl<P: MeshPass> PhaseItemExt for $name<P> {
             // Important: It must be empty to ensure it does not match any material.
             const PHASE_TYPES: RenderPhaseType = RenderPhaseType::empty();
 
@@ -32,7 +32,7 @@ macro_rules! define_dummy_phase {
             }
         }
 
-        impl<P: Pass> PhaseItem for $name<P> {
+        impl<P: MeshPass> PhaseItem for $name<P> {
             fn entity(&self) -> Entity {
                 panic!("{}", DUMMY_PHASE_ERROR)
             }
@@ -64,7 +64,7 @@ macro_rules! define_dummy_phase {
             }
         }
 
-        impl<P: Pass> BinnedPhaseItem for $name<P> {
+        impl<P: MeshPass> BinnedPhaseItem for $name<P> {
             type BatchSetKey = Opaque3dBatchSetKey;
             type BinKey = Opaque3dBinKey;
 
@@ -79,7 +79,7 @@ macro_rules! define_dummy_phase {
             }
         }
 
-        impl<P: Pass> CachedRenderPipelinePhaseItem for $name<P> {
+        impl<P: MeshPass> CachedRenderPipelinePhaseItem for $name<P> {
             fn cached_pipeline(&self) -> CachedRenderPipelineId {
                 panic!("{}", DUMMY_PHASE_ERROR)
             }
@@ -93,7 +93,7 @@ define_dummy_phase!(DummyPhase4);
 
 impl<P, PIE> PhaseItems<P> for PIE
 where
-    P: Pass,
+    P: MeshPass,
     PIE: PhaseItemExt,
 {
     type Phase1 = PIE;
@@ -101,14 +101,14 @@ where
     type Phase3 = DummyPhase3<P>;
     type Phase4 = DummyPhase4<P>;
 
-    fn valid_phase_count() -> usize {
+    fn count() -> usize {
         1
     }
 }
 
 impl<P, PIE1> PhaseItems<P> for (PIE1,)
 where
-    P: Pass,
+    P: MeshPass,
     PIE1: PhaseItemExt,
 {
     type Phase1 = PIE1;
@@ -116,14 +116,14 @@ where
     type Phase3 = DummyPhase3<P>;
     type Phase4 = DummyPhase4<P>;
 
-    fn valid_phase_count() -> usize {
+    fn count() -> usize {
         1
     }
 }
 
 impl<P, PIE1, PIE2> PhaseItems<P> for (PIE1, PIE2)
 where
-    P: Pass,
+    P: MeshPass,
     PIE1: PhaseItemExt,
     PIE2: PhaseItemExt,
 {
@@ -132,14 +132,14 @@ where
     type Phase3 = DummyPhase3<P>;
     type Phase4 = DummyPhase4<P>;
 
-    fn valid_phase_count() -> usize {
+    fn count() -> usize {
         2
     }
 }
 
 impl<P, PIE1, PIE2, PIE3> PhaseItems<P> for (PIE1, PIE2, PIE3)
 where
-    P: Pass,
+    P: MeshPass,
     PIE1: PhaseItemExt,
     PIE2: PhaseItemExt,
     PIE3: PhaseItemExt,
@@ -149,14 +149,14 @@ where
     type Phase3 = PIE3;
     type Phase4 = DummyPhase4<P>;
 
-    fn valid_phase_count() -> usize {
+    fn count() -> usize {
         3
     }
 }
 
 impl<P, PIE1, PIE2, PIE3, PIE4> PhaseItems<P> for (PIE1, PIE2, PIE3, PIE4)
 where
-    P: Pass,
+    P: MeshPass,
     PIE1: PhaseItemExt,
     PIE2: PhaseItemExt,
     PIE3: PhaseItemExt,
@@ -167,7 +167,7 @@ where
     type Phase3 = PIE3;
     type Phase4 = PIE4;
 
-    fn valid_phase_count() -> usize {
+    fn count() -> usize {
         4
     }
 }

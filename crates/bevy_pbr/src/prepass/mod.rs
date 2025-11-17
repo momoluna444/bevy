@@ -1,13 +1,8 @@
 mod prepass_bindings;
 
-
-use crate::{
-    DeferredAlphaMaskDrawFunction, DeferredFragmentShader, DeferredOpaqueDrawFunction, DeferredVertexShader, DrawMesh, ErasedMaterialPipelineKey, MaterialPipeline, MaterialProperties, MeshLayouts, MeshPipeline, MeshPipelineKey, OpaqueRendererMethod, Pass, PassId, PassPlugin, PhaseContext, PhaseItemExt, PipelineSpecializer, PreparedMaterial, PrepassAlphaMaskDrawFunction, PrepassFragmentShader, PrepassOpaqueDrawFunction, PrepassVertexShader, RenderMeshInstanceFlags, RenderPhaseType, SetMaterialBindGroup, SetMeshBindGroup, ShadowView, SpecializerKeyContext, ViewKeyCache, ViewSpecializationTicks, alpha_mode_pipeline_key, binding_arrays_are_usable, buffer_layout, init_material_pipeline, setup_morph_and_skinning_defs, skin
-};
+use crate::*;
 use bevy_app::{App, Plugin, PreUpdate};
-use bevy_asset::{
-    embedded_asset, load_embedded_asset, AssetServer, Handle,
-};
+use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer, Handle};
 use bevy_camera::{Camera, Camera3d};
 use bevy_core_pipeline::{core_3d::CORE_3D_DEPTH_FORMAT, deferred::*, prepass::*};
 use bevy_ecs::{
@@ -27,7 +22,7 @@ use bevy_render::{
     renderer::{RenderAdapter, RenderDevice, RenderQueue},
     sync_world::RenderEntity,
     view::{
-        ExtractedView, Msaa, RenderVisibilityRanges, RetainedViewEntity, ViewUniform,
+        ExtractedView, Msaa, RenderVisibilityRanges, ViewUniform,
         ViewUniformOffset, ViewUniforms, VISIBILITY_RANGES_STORAGE_BUFFER_COUNT,
     },
     Extract, ExtractSchedule, Render, RenderApp, RenderDebugFlags, RenderStartup, RenderSystems,
@@ -44,11 +39,8 @@ use crate::meshlet::{
 };
 
 use alloc::sync::Arc;
-use bevy_derive::{Deref, DerefMut};
-use bevy_ecs::{change_detection::Tick, system::SystemChangeTick};
-use bevy_platform::collections::HashMap;
+use bevy_ecs::system::SystemChangeTick;
 use bevy_render::{
-    sync_world::MainEntityHashMap,
     RenderSystems::{PrepareAssets, PrepareResources},
 };
 use bevy_utils::default;
@@ -82,8 +74,7 @@ impl Plugin for PrepassPipelinePlugin {
             .add_systems(
                 Render,
                 prepare_prepass_view_bind_group.in_set(RenderSystems::PrepareBindGroups),
-            )
-            .init_resource::<SpecializedMeshPipelines<PrepassPipelineSpecializer>>();
+            );
     }
 }
 
@@ -114,7 +105,10 @@ impl Plugin for PrepassPlugin {
         // Why don't these guards protect systems like `check_prepass_views_need_specialization`?
         if no_prepass_plugin_loaded {
             app.insert_resource(AnyPrepassPluginLoaded)
-                .add_plugins(PassPlugin::<Prepass>::new(self.debug_flags))
+                .register_required_components::<Camera3d, Prepass>()
+                .register_required_components::<Camera3d, DeferredPass>()
+                .add_plugins(MeshPassPlugin::<Prepass>::new(self.debug_flags))
+                .add_plugins(MeshPassPlugin::<DeferredPass>::new(self.debug_flags))
                 // At the start of each frame, last frame's GlobalTransforms become this frame's PreviousGlobalTransforms
                 // and last frame's view projection matrices become this frame's PreviousViewProjections
                 .add_systems(
@@ -140,9 +134,6 @@ impl Plugin for PrepassPlugin {
         }
 
         render_app
-            // .init_resource::<ViewPrepassSpecializationTicks>()
-            // .init_resource::<ViewKeyPrepassCache>()
-            .init_resource::<SpecializedPrepassMaterialPipelineCache>()
             .add_systems(
                 Render,
                 check_prepass_views_need_specialization::<Prepass>.in_set(PrepareAssets),
@@ -162,18 +153,23 @@ impl Plugin for PrepassPlugin {
 #[derive(Clone, Copy, Default, Component, ExtractComponent)]
 pub struct Prepass;
 
-impl Pass for Prepass {
-    type ViewKeyCacheSource = Self;
-
+impl MeshPass for Prepass {
+    type ViewKeySource = Self;
     type Specializer = PrepassPipelineSpecializer;
+    type PhaseItems = (Opaque3dPrepass, AlphaMask3dPrepass);
+    type RenderCommand = DrawPrepass;
+}
 
-    type PhaseItems = (
-        Opaque3dPrepass,
-        AlphaMask3dPrepass,
-        Opaque3dDeferred,
-        AlphaMask3dDeferred,
-    );
+// Or `DeferredPrepass`?
+#[derive(Clone, Copy, Default, Component, ExtractComponent)]
+pub struct DeferredPass;
 
+// Currently we use `check_prepass_views_need_specialization` for both Prepass and DeferredPass.
+// Maybe split it later.
+impl MeshPass for DeferredPass {
+    type ViewKeySource = Prepass;
+    type Specializer = PrepassPipelineSpecializer;
+    type PhaseItems = (Opaque3dDeferred, AlphaMask3dDeferred);
     type RenderCommand = DrawPrepass;
 }
 
@@ -316,7 +312,7 @@ pub fn init_prepass_pipeline(
         view_layout_no_motion_vectors,
         mesh_layouts: mesh_pipeline.mesh_layouts.clone(),
         default_prepass_shader: load_embedded_asset!(asset_server.as_ref(), "prepass.wgsl"),
-        skins_use_uniform_buffers: skin::skins_use_uniform_buffers(&render_device.limits()),
+        skins_use_uniform_buffers: skins_use_uniform_buffers(&render_device.limits()),
         depth_clip_control_supported,
         binding_arrays_are_usable: binding_arrays_are_usable(&render_device, &render_adapter),
         empty_layout: BindGroupLayoutDescriptor::new("prepass_empty_layout", &[]),
@@ -452,30 +448,30 @@ pub fn prepare_prepass_view_bind_group(
     }
 }
 
-/// Stores the [`SpecializedPrepassMaterialViewPipelineCache`] for each view.
-#[derive(Resource, Deref, DerefMut, Default)]
-pub struct SpecializedPrepassMaterialPipelineCache {
-    // view_entity -> view pipeline cache
-    #[deref]
-    map: HashMap<RetainedViewEntity, SpecializedPrepassMaterialViewPipelineCache>,
-}
+// /// Stores the [`SpecializedPrepassMaterialViewPipelineCache`] for each view.
+// #[derive(Resource, Deref, DerefMut, Default)]
+// pub struct SpecializedPrepassMaterialPipelineCache {
+//     // view_entity -> view pipeline cache
+//     #[deref]
+//     map: HashMap<RetainedViewEntity, SpecializedPrepassMaterialViewPipelineCache>,
+// }
 
-/// Stores the cached render pipeline ID for each entity in a single view, as
-/// well as the last time it was changed.
-#[derive(Deref, DerefMut, Default)]
-pub struct SpecializedPrepassMaterialViewPipelineCache {
-    // material entity -> (tick, pipeline_id)
-    #[deref]
-    map: MainEntityHashMap<(Tick, CachedRenderPipelineId)>,
-}
+// /// Stores the cached render pipeline ID for each entity in a single view, as
+// /// well as the last time it was changed.
+// #[derive(Deref, DerefMut, Default)]
+// pub struct SpecializedPrepassMaterialViewPipelineCache {
+//     // material entity -> (tick, pipeline_id)
+//     #[deref]
+//     map: MainEntityHashMap<(Tick, CachedRenderPipelineId)>,
+// }
 
-#[derive(Resource, Deref, DerefMut, Default, Clone)]
-pub struct ViewKeyPrepassCache(HashMap<RetainedViewEntity, MeshPipelineKey>);
+// #[derive(Resource, Deref, DerefMut, Default, Clone)]
+// pub struct ViewKeyPrepassCache(HashMap<RetainedViewEntity, MeshPipelineKey>);
 
-#[derive(Resource, Deref, DerefMut, Default, Clone)]
-pub struct ViewPrepassSpecializationTicks(HashMap<RetainedViewEntity, Tick>);
+// #[derive(Resource, Deref, DerefMut, Default, Clone)]
+// pub struct ViewPrepassSpecializationTicks(HashMap<RetainedViewEntity, Tick>);
 
-pub fn check_prepass_views_need_specialization<P: Pass>(
+pub fn check_prepass_views_need_specialization<P: MeshPass>(
     mut view_key_cache: ResMut<ViewKeyCache<P>>,
     mut view_specialization_ticks: ResMut<ViewSpecializationTicks<P>>,
     mut views: Query<(
@@ -502,7 +498,7 @@ pub fn check_prepass_views_need_specialization<P: Pass>(
             view_key |= MeshPipelineKey::MOTION_VECTOR_PREPASS;
         }
         // NOTE: This parameter was moved from `specialize_prepass_material_meshes` to here,
-        // which means the specialization of prepass will be affected by `DeferredPrepass`.
+        // which means the specialization of prepass will be affected by `DeferredPrepass` now.
         if deferred_prepass.is_some() {
             view_key |= MeshPipelineKey::DEFERRED_PREPASS;
         }
@@ -522,13 +518,13 @@ pub fn check_prepass_views_need_specialization<P: Pass>(
 pub struct PrepassPipelineSpecializer {
     pub(crate) pipeline: PrepassPipeline,
     pub(crate) properties: Arc<MaterialProperties>,
-    pub(crate) pass_id: PassId,
+    pub(crate) _pass_id: PassId,
 }
 
 impl PipelineSpecializer for PrepassPipelineSpecializer {
     type Pipeline = PrepassPipeline;
 
-    fn create_key(context: &SpecializerKeyContext) -> Option<Self::Key> {
+    fn create_key(context: &SpecializerKeyContext) -> Self::Key {
         let mut mesh_key =
             context.view_key | MeshPipelineKey::from_bits_retain(context.mesh_pipeline_key.bits());
 
@@ -582,18 +578,18 @@ impl PipelineSpecializer for PrepassPipelineSpecializer {
             }
         }
 
-        Some(ErasedMaterialPipelineKey {
+        ErasedMaterialPipelineKey {
             mesh_key,
             material_key: context.material.properties.material_key.clone(),
             type_id: context.material_asset_id,
-        })
+        }
     }
 
-    fn new(pipeline: &Self::Pipeline, material: &PreparedMaterial, pass_id: PassId) -> Self {
+    fn new(pipeline: &Self::Pipeline, material: &PreparedMaterial, _pass_id: PassId) -> Self {
         PrepassPipelineSpecializer {
             pipeline: pipeline.clone(),
             properties: material.properties.clone(),
-            pass_id,
+            _pass_id,
         }
     }
 }
@@ -630,6 +626,9 @@ impl SpecializedMeshPipeline for PrepassPipelineSpecializer {
     }
 }
 
+// NOTE: For simplicity of implementation, we directly hardcode the PassId in `ShaderLabel`s.
+// However, if we want to make it more general, we need a method to pass the PassId from 
+// the outside.
 impl PrepassPipeline {
     fn specialize(
         &self,
@@ -656,7 +655,7 @@ impl PrepassPipeline {
 
         shader_defs.push(ShaderDefVal::UInt(
             "MATERIAL_BIND_GROUP".into(),
-            crate::MATERIAL_BIND_GROUP_INDEX as u32,
+            MATERIAL_BIND_GROUP_INDEX as u32,
         ));
         // NOTE: Eventually, it would be nice to only add this when the shaders are overloaded by the Material.
         // The main limitation right now is that bind group order is hardcoded in shaders.
@@ -803,18 +802,18 @@ impl PrepassPipeline {
             || emulate_unclipped_depth
             || (mesh_key.contains(MeshPipelineKey::MAY_DISCARD)
                 && material_properties
-                    .get_shader(PrepassFragmentShader)
+                    .get_shader(MaterialFragmentShader(Prepass::id()))
                     .is_some());
 
         let fragment = fragment_required.then(|| {
             // Use the fragment shader from the material
             let frag_shader_handle = if mesh_key.contains(MeshPipelineKey::DEFERRED_PREPASS) {
-                match material_properties.get_shader(DeferredFragmentShader) {
+                match material_properties.get_shader(MaterialFragmentShader(DeferredPass::id())) {
                     Some(frag_shader_handle) => frag_shader_handle,
                     None => self.default_prepass_shader.clone(),
                 }
             } else {
-                match material_properties.get_shader(PrepassFragmentShader) {
+                match material_properties.get_shader(MaterialFragmentShader(Prepass::id())) {
                     Some(frag_shader_handle) => frag_shader_handle,
                     None => self.default_prepass_shader.clone(),
                 }
@@ -830,12 +829,16 @@ impl PrepassPipeline {
 
         // Use the vertex shader from the material if present
         let vert_shader_handle = if mesh_key.contains(MeshPipelineKey::DEFERRED_PREPASS) {
-            if let Some(handle) = material_properties.get_shader(DeferredVertexShader) {
+            if let Some(handle) =
+                material_properties.get_shader(MaterialVertexShader(DeferredPass::id()))
+            {
                 handle
             } else {
                 self.default_prepass_shader.clone()
             }
-        } else if let Some(handle) = material_properties.get_shader(PrepassVertexShader) {
+        } else if let Some(handle) =
+            material_properties.get_shader(MaterialVertexShader(Prepass::id()))
+        {
             handle
         } else {
             self.default_prepass_shader.clone()
@@ -894,17 +897,9 @@ impl PhaseItemExt for Opaque3dPrepass {
                 .mesh_allocator
                 .mesh_slabs(&context.mesh_instance.mesh_asset_id);
 
-            let Some(draw_function) = context
-                .material
-                .properties
-                .get_draw_function(PrepassOpaqueDrawFunction)
-            else {
-                return;
-            };
-
             render_phase.add(
                 OpaqueNoLightmap3dBatchSetKey {
-                    draw_function,
+                    draw_function: context.draw_function,
                     pipeline: context.pipeline_id,
                     material_bind_group_index: Some(context.material.binding.group.0),
                     vertex_slab: vertex_slab.unwrap_or_default(),
@@ -937,17 +932,9 @@ impl PhaseItemExt for Opaque3dDeferred {
                 .mesh_allocator
                 .mesh_slabs(&context.mesh_instance.mesh_asset_id);
 
-            let Some(draw_function) = context
-                .material
-                .properties
-                .get_draw_function(DeferredOpaqueDrawFunction)
-            else {
-                return;
-            };
-
             render_phase.add(
                 OpaqueNoLightmap3dBatchSetKey {
-                    draw_function,
+                    draw_function: context.draw_function,
                     pipeline: context.pipeline_id,
                     material_bind_group_index: Some(context.material.binding.group.0),
                     vertex_slab: vertex_slab.unwrap_or_default(),
@@ -980,16 +967,8 @@ impl PhaseItemExt for AlphaMask3dPrepass {
                 .mesh_allocator
                 .mesh_slabs(&context.mesh_instance.mesh_asset_id);
 
-            let Some(draw_function) = context
-                .material
-                .properties
-                .get_draw_function(PrepassAlphaMaskDrawFunction)
-            else {
-                return;
-            };
-
             let batch_set_key = OpaqueNoLightmap3dBatchSetKey {
-                draw_function,
+                draw_function: context.draw_function,
                 pipeline: context.pipeline_id,
                 material_bind_group_index: Some(context.material.binding.group.0),
                 vertex_slab: vertex_slab.unwrap_or_default(),
@@ -1025,16 +1004,8 @@ impl PhaseItemExt for AlphaMask3dDeferred {
                 .mesh_allocator
                 .mesh_slabs(&context.mesh_instance.mesh_asset_id);
 
-            let Some(draw_function) = context
-                .material
-                .properties
-                .get_draw_function(DeferredAlphaMaskDrawFunction)
-            else {
-                return;
-            };
-
             let batch_set_key = OpaqueNoLightmap3dBatchSetKey {
-                draw_function,
+                draw_function: context.draw_function,
                 pipeline: context.pipeline_id,
                 material_bind_group_index: Some(context.material.binding.group.0),
                 vertex_slab: vertex_slab.unwrap_or_default(),
