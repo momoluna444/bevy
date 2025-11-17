@@ -1,6 +1,7 @@
 use std::{any::TypeId, sync::Arc};
 
 use bevy_app::Plugin;
+use bevy_asset::uuid::timestamp::context;
 use bevy_camera::{Camera3d, Projection};
 use bevy_core_pipeline::{
     core_3d::{
@@ -22,13 +23,18 @@ use bevy_ecs::{
 use bevy_light::{EnvironmentMapLight, IrradianceVolume, ShadowFilteringMethod};
 use bevy_mesh::{BaseMeshPipelineKey, MeshVertexBufferLayoutRef};
 use bevy_render::{
-    Render, RenderApp, RenderDebugFlags, RenderStartup, RenderSystems, camera::TemporalJitter, extract_component::ExtractComponent, render_phase::{
+    camera::TemporalJitter,
+    extract_component::ExtractComponent,
+    render_phase::{
         AddRenderCommand, BinnedRenderPhase, BinnedRenderPhasePlugin, BinnedRenderPhaseType,
         DrawFunctions, PhaseItemExtraIndex, SortedRenderPhase, SortedRenderPhasePlugin,
         ViewBinnedRenderPhases, ViewSortedRenderPhases,
-    }, render_resource::{
+    },
+    render_resource::{
         RenderPipelineDescriptor, SpecializedMeshPipeline, SpecializedMeshPipelineError,
-    }, view::{ExtractedView, Msaa}
+    },
+    view::{ExtractedView, Msaa},
+    Render, RenderApp, RenderDebugFlags, RenderStartup, RenderSystems,
 };
 use bevy_shader::ShaderDefVal;
 
@@ -41,8 +47,8 @@ use crate::{
     PassPlugin, PhaseContext, PhaseItemExt, PipelineSpecializer, PreparedMaterial,
     PrepassPipelinePlugin, PrepassPlugin, RenderLightmap, RenderMeshInstanceFlags, RenderPhaseType,
     RenderViewLightProbes, ScreenSpaceAmbientOcclusion, Shadow,
-    SpecializedShadowMaterialPipelineCache, ViewKeyCache, ViewSpecializationTicks,
-    MATERIAL_BIND_GROUP_INDEX,
+    SpecializedShadowMaterialPipelineCache, SpecializerKeyContext, ViewKeyCache,
+    ViewSpecializationTicks, MATERIAL_BIND_GROUP_INDEX,
 };
 
 #[derive(Default)]
@@ -248,25 +254,17 @@ pub struct MaterialPipelineSpecializer {
 impl PipelineSpecializer for MaterialPipelineSpecializer {
     type Pipeline = MaterialPipeline;
 
-    fn create_key(
-        view_key: MeshPipelineKey,
-        base_mesh_key: &BaseMeshPipelineKey,
-        mesh_instance_flags: &RenderMeshInstanceFlags,
-        material: &PreparedMaterial,
-        lightmap: Option<&RenderLightmap>,
-        has_crossfade: bool,
-        type_id: TypeId,
-    ) -> Option<Self::Key> {
-        let mut mesh_pipeline_key_bits = material.properties.mesh_pipeline_key_bits;
+    fn create_key(context: &SpecializerKeyContext) -> Option<Self::Key> {
+        let mut mesh_pipeline_key_bits = context.material.properties.mesh_pipeline_key_bits;
         mesh_pipeline_key_bits.insert(alpha_mode_pipeline_key(
-            material.properties.alpha_mode,
-            &Msaa::from_samples(view_key.msaa_samples()),
+            context.material.properties.alpha_mode,
+            &Msaa::from_samples(context.view_key.msaa_samples()),
         ));
-        let mut mesh_key = view_key
-            | MeshPipelineKey::from_bits_retain(base_mesh_key.bits())
+        let mut mesh_key = context.view_key
+            | MeshPipelineKey::from_bits_retain(context.mesh_pipeline_key.bits())
             | mesh_pipeline_key_bits;
 
-        if let Some(lightmap) = lightmap {
+        if let Some(lightmap) = context.lightmap {
             mesh_key |= MeshPipelineKey::LIGHTMAPPED;
 
             if lightmap.bicubic_sampling {
@@ -274,26 +272,35 @@ impl PipelineSpecializer for MaterialPipelineSpecializer {
             }
         }
 
-        if has_crossfade {
+        if context.has_crossfade {
             mesh_key |= MeshPipelineKey::VISIBILITY_RANGE_DITHER;
         }
 
-        if view_key.contains(MeshPipelineKey::MOTION_VECTOR_PREPASS) {
+        if context
+            .view_key
+            .contains(MeshPipelineKey::MOTION_VECTOR_PREPASS)
+        {
             // If the previous frame have skins or morph targets, note that.
-            if mesh_instance_flags.contains(RenderMeshInstanceFlags::HAS_PREVIOUS_SKIN) {
+            if context
+                .mesh_instance_flags
+                .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_SKIN)
+            {
                 mesh_key |= MeshPipelineKey::HAS_PREVIOUS_SKIN;
             }
-            if mesh_instance_flags.contains(RenderMeshInstanceFlags::HAS_PREVIOUS_MORPH) {
+            if context
+                .mesh_instance_flags
+                .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_MORPH)
+            {
                 mesh_key |= MeshPipelineKey::HAS_PREVIOUS_MORPH;
             }
         }
 
-        let material_key = material.properties.material_key.clone();
+        let material_key = context.material.properties.material_key.clone();
 
         Some(Self::Key {
             mesh_key,
             material_key,
-            type_id,
+            type_id: context.material_asset_id,
         })
     }
 
@@ -383,7 +390,7 @@ impl PhaseItemExt for Opaque3d {
 
         render_phase.add(
             Opaque3dBatchSetKey {
-                pipeline: context.pipeline,
+                pipeline: context.pipeline_id,
                 draw_function: context.draw_function,
                 material_bind_group_index: Some(context.material.binding.group.0),
                 vertex_slab: vertex_slab.unwrap_or_default(),
@@ -421,7 +428,7 @@ impl PhaseItemExt for AlphaMask3d {
 
         render_phase.add(
             OpaqueNoLightmap3dBatchSetKey {
-                pipeline: context.pipeline,
+                pipeline: context.pipeline_id,
                 draw_function: context.draw_function,
                 material_bind_group_index: Some(context.material.binding.group.0),
                 vertex_slab: vertex_slab.unwrap_or_default(),
@@ -459,7 +466,7 @@ impl PhaseItemExt for Transmissive3d {
         render_phase.add(Transmissive3d {
             entity: (context.entity, context.main_entity),
             draw_function: context.draw_function,
-            pipeline: context.pipeline,
+            pipeline: context.pipeline_id,
             distance,
             batch_range: 0..1,
             extra_index: PhaseItemExtraIndex::None,
@@ -486,7 +493,7 @@ impl PhaseItemExt for Transparent3d {
         render_phase.add(Transparent3d {
             entity: (context.entity, context.main_entity),
             draw_function: context.draw_function,
-            pipeline: context.pipeline,
+            pipeline: context.pipeline_id,
             distance,
             batch_range: 0..1,
             extra_index: PhaseItemExtraIndex::None,

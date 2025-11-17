@@ -10,10 +10,12 @@ use crate::{
     PassId, PassPlugin, PhaseContext, PhaseItemExt, PipelineSpecializer, PreparedMaterial,
     PrepassDrawFunction, PrepassFragmentShader, PrepassVertexShader, RenderLightmap,
     RenderMeshInstanceFlags, RenderPhaseType, SetMaterialBindGroup, SetMeshBindGroup, ShadowView,
-    ViewKeyCache, ViewSpecializationTicks,
+    SpecializerKeyContext, ViewKeyCache, ViewSpecializationTicks,
 };
 use bevy_app::{App, Plugin, PreUpdate};
-use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer, Handle};
+use bevy_asset::{
+    embedded_asset, load_embedded_asset, uuid::timestamp::context, AssetServer, Handle,
+};
 use bevy_camera::{Camera, Camera3d};
 use bevy_core_pipeline::{core_3d::CORE_3D_DEPTH_FORMAT, deferred::*, prepass::*};
 use bevy_ecs::{
@@ -116,9 +118,8 @@ impl Plugin for PrepassPlugin {
             .is_none();
 
         // QUESTION:
-        // Why are these guards here?
-        // Why don't they protect systems like `check_prepass_views_need_specialization`?
-        // And, when will we want to add `PrepassPlugin` multiple times?
+        // When will we want to add `PrepassPlugin` multiple times?
+        // Why don't these guards protect systems like `check_prepass_views_need_specialization`?
         if no_prepass_plugin_loaded {
             app.insert_resource(AnyPrepassPluginLoaded)
                 .add_plugins(PassPlugin::<Prepass>::new(self.debug_flags))
@@ -535,32 +536,25 @@ pub struct PrepassPipelineSpecializer {
 impl PipelineSpecializer for PrepassPipelineSpecializer {
     type Pipeline = PrepassPipeline;
 
-    fn create_key(
-        view_key: MeshPipelineKey,
-        base_mesh_key: &BaseMeshPipelineKey,
-        mesh_instance_flags: &RenderMeshInstanceFlags,
-        material: &PreparedMaterial,
-        lightmap: Option<&RenderLightmap>,
-        has_crossfade: bool,
-        type_id: TypeId,
-    ) -> Option<Self::Key> {
-        let mut mesh_key = view_key | MeshPipelineKey::from_bits_retain(base_mesh_key.bits());
+    fn create_key(context: &SpecializerKeyContext) -> Option<Self::Key> {
+        let mut mesh_key =
+            context.view_key | MeshPipelineKey::from_bits_retain(context.mesh_pipeline_key.bits());
 
         mesh_key |= alpha_mode_pipeline_key(
-            material.properties.alpha_mode,
-            &Msaa::from_samples(view_key.msaa_samples()),
+            context.material.properties.alpha_mode,
+            &Msaa::from_samples(context.view_key.msaa_samples()),
         );
 
-        let forward = match material.properties.render_method {
+        let forward = match context.material.properties.render_method {
             OpaqueRendererMethod::Forward => true,
             OpaqueRendererMethod::Deferred => false,
             OpaqueRendererMethod::Auto => unreachable!(),
         };
 
         // view_key already contains the deferred prepass flag
-        let deferred = view_key.contains(MeshPipelineKey::DEFERRED_PREPASS) && !forward;
+        let deferred = context.view_key.contains(MeshPipelineKey::DEFERRED_PREPASS) && !forward;
 
-        if let Some(lightmap) = lightmap {
+        if let Some(lightmap) = context.lightmap {
             // Even though we don't use the lightmap in the forward prepass, the
             // `SetMeshBindGroup` render command will bind the data for it. So
             // we need to include the appropriate flag in the mesh pipeline key
@@ -573,24 +567,33 @@ impl PipelineSpecializer for PrepassPipelineSpecializer {
             }
         }
 
-        if has_crossfade {
+        if context.has_crossfade {
             mesh_key |= MeshPipelineKey::VISIBILITY_RANGE_DITHER;
         }
 
         // If the previous frame has skins or morph targets, note that.
-        if view_key.contains(MeshPipelineKey::MOTION_VECTOR_PREPASS) {
-            if mesh_instance_flags.contains(RenderMeshInstanceFlags::HAS_PREVIOUS_SKIN) {
+        if context
+            .view_key
+            .contains(MeshPipelineKey::MOTION_VECTOR_PREPASS)
+        {
+            if context
+                .mesh_instance_flags
+                .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_SKIN)
+            {
                 mesh_key |= MeshPipelineKey::HAS_PREVIOUS_SKIN;
             }
-            if mesh_instance_flags.contains(RenderMeshInstanceFlags::HAS_PREVIOUS_MORPH) {
+            if context
+                .mesh_instance_flags
+                .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_MORPH)
+            {
                 mesh_key |= MeshPipelineKey::HAS_PREVIOUS_MORPH;
             }
         }
 
         Some(ErasedMaterialPipelineKey {
             mesh_key,
-            material_key: material.properties.material_key.clone(),
-            type_id,
+            material_key: context.material.properties.material_key.clone(),
+            type_id: context.material_asset_id,
         })
     }
 
@@ -906,7 +909,7 @@ impl PhaseItemExt for Opaque3dPrepass {
                         .properties
                         .get_draw_function(PrepassDrawFunction)
                         .unwrap(),
-                    pipeline: context.pipeline,
+                    pipeline: context.pipeline_id,
                     material_bind_group_index: Some(context.material.binding.group.0),
                     vertex_slab: vertex_slab.unwrap_or_default(),
                     index_slab,
@@ -945,7 +948,7 @@ impl PhaseItemExt for Opaque3dDeferred {
                         .properties
                         .get_draw_function(DeferredDrawFunction)
                         .unwrap(),
-                    pipeline: context.pipeline,
+                    pipeline: context.pipeline_id,
                     material_bind_group_index: Some(context.material.binding.group.0),
                     vertex_slab: vertex_slab.unwrap_or_default(),
                     index_slab,
@@ -983,7 +986,7 @@ impl PhaseItemExt for AlphaMask3dPrepass {
                     .properties
                     .get_draw_function(PrepassDrawFunction)
                     .unwrap(),
-                pipeline: context.pipeline,
+                pipeline: context.pipeline_id,
                 material_bind_group_index: Some(context.material.binding.group.0),
                 vertex_slab: vertex_slab.unwrap_or_default(),
                 index_slab,
@@ -1024,7 +1027,7 @@ impl PhaseItemExt for AlphaMask3dDeferred {
                     .properties
                     .get_draw_function(DeferredDrawFunction)
                     .unwrap(),
-                pipeline: context.pipeline,
+                pipeline: context.pipeline_id,
                 material_bind_group_index: Some(context.material.binding.group.0),
                 vertex_slab: vertex_slab.unwrap_or_default(),
                 index_slab,

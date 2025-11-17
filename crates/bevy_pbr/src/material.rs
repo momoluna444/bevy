@@ -1184,19 +1184,21 @@ pub fn check_entities_needing_specialization<M>(
     par_local.drain_into(&mut entities_needing_specialization);
 }
 
+pub struct SpecializerKeyContext<'a> {
+    pub view_key: MeshPipelineKey,
+    pub mesh_pipeline_key: BaseMeshPipelineKey,
+    pub mesh_instance_flags: RenderMeshInstanceFlags,
+    pub material: &'a PreparedMaterial,
+    pub material_asset_id: TypeId,
+    pub lightmap: Option<&'a RenderLightmap>,
+    pub has_crossfade: bool,
+}
+
 /// TODO: docs
 pub trait PipelineSpecializer: SpecializedMeshPipeline {
     type Pipeline: Resource;
 
-    fn create_key(
-        view_key: MeshPipelineKey,
-        base_mesh_key: &BaseMeshPipelineKey,
-        mesh_instance_flags: &RenderMeshInstanceFlags,
-        material: &PreparedMaterial,
-        lightmap: Option<&RenderLightmap>,
-        has_crossfade: bool,
-        type_id: TypeId,
-    ) -> Option<Self::Key>;
+    fn create_key(context: &SpecializerKeyContext) -> Option<Self::Key>;
 
     fn new(pipeline: &Self::Pipeline, material: &PreparedMaterial, pass_id: PassId) -> Self;
 }
@@ -1351,15 +1353,17 @@ pub fn specialize_material_meshes<P: Pass>(
             let has_crossfade =
                 render_visibility_ranges.entity_has_crossfading_visibility_ranges(*visible_entity);
 
-            let Some(key) = P::Specializer::create_key(
-                *view_key,
-                &mesh.key_bits,
-                &mesh_instance.flags,
+            let key_context = SpecializerKeyContext {
+                view_key: *view_key,
+                mesh_pipeline_key: mesh.key_bits,
+                mesh_instance_flags: mesh_instance.flags,
                 material,
                 lightmap,
                 has_crossfade,
-                material_instance.asset_id.type_id(),
-            ) else {
+                material_asset_id: material_instance.asset_id.type_id(),
+            };
+
+            let Some(key) = P::Specializer::create_key(&key_context) else {
                 continue;
             };
 
@@ -1434,13 +1438,13 @@ where
 pub struct PhaseContext<'a> {
     pub mesh_instance: &'a RenderMeshQueueData<'a>,
     pub material: &'a PreparedMaterial,
-    pub mesh_allocator: &'a Res<'a, MeshAllocator>,
+    pub mesh_allocator: &'a MeshAllocator,
     pub entity: Entity,
     pub main_entity: MainEntity,
     pub draw_function: DrawFunctionId,
-    pub pipeline: CachedRenderPipelineId,
+    pub pipeline_id: CachedRenderPipelineId,
     pub current_change_tick: Tick,
-    pub gpu_preprocessing_support: &'a GpuPreprocessingSupport,
+    pub gpu_preprocessing_support: GpuPreprocessingSupport,
     pub rangefinder: &'a ViewRangefinder3d,
 }
 
@@ -1467,7 +1471,6 @@ pub trait RenderPhase {
 pub trait ViewRenderPhases {
     type Phase: RenderPhase;
 
-    // contains_key
     fn contains_key(&self, view_entity: &RetainedViewEntity) -> bool;
 
     fn get_mut(&mut self, view_entity: &RetainedViewEntity) -> Option<&mut Self::Phase>;
@@ -1639,9 +1642,9 @@ pub fn queue_material_meshes<P: Pass>(
                 entity: *render_entity,
                 main_entity: *visible_entity,
                 draw_function,
-                pipeline: pipeline_id,
+                pipeline_id,
                 current_change_tick,
-                gpu_preprocessing_support: &gpu_preprocessing_support,
+                gpu_preprocessing_support: *gpu_preprocessing_support,
                 rangefinder: &rangefinder,
             };
 
@@ -1652,7 +1655,7 @@ pub fn queue_material_meshes<P: Pass>(
                 if let Some(phase1) = phase1.as_mut() {
                     phase1.add(&context);
                 }
-            } 
+            }
             if Phase2::<P>::PHASE_TYPES.contains(phase_type) {
                 if let Some(phase2) = phase2.as_mut() {
                     phase2.add(&context);
