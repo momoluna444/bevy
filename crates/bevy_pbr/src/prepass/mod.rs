@@ -1,20 +1,12 @@
 mod prepass_bindings;
 
-use std::any::TypeId;
 
 use crate::{
-    alpha_mode_pipeline_key, binding_arrays_are_usable, buffer_layout, init_material_pipeline,
-    setup_morph_and_skinning_defs, skin, DeferredDrawFunction, DeferredFragmentShader,
-    DeferredVertexShader, DrawMesh, ErasedMaterialPipelineKey, MaterialPipeline,
-    MaterialProperties, MeshLayouts, MeshPipeline, MeshPipelineKey, OpaqueRendererMethod, Pass,
-    PassId, PassPlugin, PhaseContext, PhaseItemExt, PipelineSpecializer, PreparedMaterial,
-    PrepassDrawFunction, PrepassFragmentShader, PrepassVertexShader, RenderLightmap,
-    RenderMeshInstanceFlags, RenderPhaseType, SetMaterialBindGroup, SetMeshBindGroup, ShadowView,
-    SpecializerKeyContext, ViewKeyCache, ViewSpecializationTicks,
+    DeferredAlphaMaskDrawFunction, DeferredFragmentShader, DeferredOpaqueDrawFunction, DeferredVertexShader, DrawMesh, ErasedMaterialPipelineKey, MaterialPipeline, MaterialProperties, MeshLayouts, MeshPipeline, MeshPipelineKey, OpaqueRendererMethod, Pass, PassId, PassPlugin, PhaseContext, PhaseItemExt, PipelineSpecializer, PreparedMaterial, PrepassAlphaMaskDrawFunction, PrepassFragmentShader, PrepassOpaqueDrawFunction, PrepassVertexShader, RenderMeshInstanceFlags, RenderPhaseType, SetMaterialBindGroup, SetMeshBindGroup, ShadowView, SpecializerKeyContext, ViewKeyCache, ViewSpecializationTicks, alpha_mode_pipeline_key, binding_arrays_are_usable, buffer_layout, init_material_pipeline, setup_morph_and_skinning_defs, skin
 };
 use bevy_app::{App, Plugin, PreUpdate};
 use bevy_asset::{
-    embedded_asset, load_embedded_asset, uuid::timestamp::context, AssetServer, Handle,
+    embedded_asset, load_embedded_asset, AssetServer, Handle,
 };
 use bevy_camera::{Camera, Camera3d};
 use bevy_core_pipeline::{core_3d::CORE_3D_DEPTH_FORMAT, deferred::*, prepass::*};
@@ -26,7 +18,7 @@ use bevy_ecs::{
     },
 };
 use bevy_math::{Affine3A, Mat4, Vec4};
-use bevy_mesh::{BaseMeshPipelineKey, Mesh, Mesh3d, MeshVertexBufferLayoutRef};
+use bevy_mesh::{Mesh, Mesh3d, MeshVertexBufferLayoutRef};
 use bevy_render::{
     extract_component::ExtractComponent,
     globals::{GlobalsBuffer, GlobalsUniform},
@@ -902,13 +894,17 @@ impl PhaseItemExt for Opaque3dPrepass {
                 .mesh_allocator
                 .mesh_slabs(&context.mesh_instance.mesh_asset_id);
 
+            let Some(draw_function) = context
+                .material
+                .properties
+                .get_draw_function(PrepassOpaqueDrawFunction)
+            else {
+                return;
+            };
+
             render_phase.add(
                 OpaqueNoLightmap3dBatchSetKey {
-                    draw_function: context
-                        .material
-                        .properties
-                        .get_draw_function(PrepassDrawFunction)
-                        .unwrap(),
+                    draw_function,
                     pipeline: context.pipeline_id,
                     material_bind_group_index: Some(context.material.binding.group.0),
                     vertex_slab: vertex_slab.unwrap_or_default(),
@@ -941,13 +937,17 @@ impl PhaseItemExt for Opaque3dDeferred {
                 .mesh_allocator
                 .mesh_slabs(&context.mesh_instance.mesh_asset_id);
 
+            let Some(draw_function) = context
+                .material
+                .properties
+                .get_draw_function(DeferredOpaqueDrawFunction)
+            else {
+                return;
+            };
+
             render_phase.add(
                 OpaqueNoLightmap3dBatchSetKey {
-                    draw_function: context
-                        .material
-                        .properties
-                        .get_draw_function(DeferredDrawFunction)
-                        .unwrap(),
+                    draw_function,
                     pipeline: context.pipeline_id,
                     material_bind_group_index: Some(context.material.binding.group.0),
                     vertex_slab: vertex_slab.unwrap_or_default(),
@@ -980,12 +980,16 @@ impl PhaseItemExt for AlphaMask3dPrepass {
                 .mesh_allocator
                 .mesh_slabs(&context.mesh_instance.mesh_asset_id);
 
+            let Some(draw_function) = context
+                .material
+                .properties
+                .get_draw_function(PrepassAlphaMaskDrawFunction)
+            else {
+                return;
+            };
+
             let batch_set_key = OpaqueNoLightmap3dBatchSetKey {
-                draw_function: context
-                    .material
-                    .properties
-                    .get_draw_function(PrepassDrawFunction)
-                    .unwrap(),
+                draw_function,
                 pipeline: context.pipeline_id,
                 material_bind_group_index: Some(context.material.binding.group.0),
                 vertex_slab: vertex_slab.unwrap_or_default(),
@@ -1021,12 +1025,16 @@ impl PhaseItemExt for AlphaMask3dDeferred {
                 .mesh_allocator
                 .mesh_slabs(&context.mesh_instance.mesh_asset_id);
 
+            let Some(draw_function) = context
+                .material
+                .properties
+                .get_draw_function(DeferredAlphaMaskDrawFunction)
+            else {
+                return;
+            };
+
             let batch_set_key = OpaqueNoLightmap3dBatchSetKey {
-                draw_function: context
-                    .material
-                    .properties
-                    .get_draw_function(DeferredDrawFunction)
-                    .unwrap(),
+                draw_function,
                 pipeline: context.pipeline_id,
                 material_bind_group_index: Some(context.material.binding.group.0),
                 vertex_slab: vertex_slab.unwrap_or_default(),

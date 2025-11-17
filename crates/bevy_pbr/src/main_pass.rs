@@ -1,7 +1,6 @@
-use std::{any::TypeId, sync::Arc};
+use std::sync::Arc;
 
 use bevy_app::Plugin;
-use bevy_asset::uuid::timestamp::context;
 use bevy_camera::{Camera3d, Projection};
 use bevy_core_pipeline::{
     core_3d::{
@@ -21,7 +20,7 @@ use bevy_ecs::{
     system::{Query, ResMut, SystemChangeTick},
 };
 use bevy_light::{EnvironmentMapLight, IrradianceVolume, ShadowFilteringMethod};
-use bevy_mesh::{BaseMeshPipelineKey, MeshVertexBufferLayoutRef};
+use bevy_mesh::MeshVertexBufferLayoutRef;
 use bevy_render::{
     camera::TemporalJitter,
     extract_component::ExtractComponent,
@@ -45,7 +44,7 @@ use crate::{
     LightSpecializationTicks, MaterialFragmentShader, MaterialPipeline, MaterialProperties,
     MaterialVertexShader, MeshPipeline, MeshPipelineKey, OpaqueRendererMethod, Pass, PassId,
     PassPlugin, PhaseContext, PhaseItemExt, PipelineSpecializer, PreparedMaterial,
-    PrepassPipelinePlugin, PrepassPlugin, RenderLightmap, RenderMeshInstanceFlags, RenderPhaseType,
+    PrepassPipelinePlugin, PrepassPlugin, RenderMeshInstanceFlags, RenderPhaseType,
     RenderViewLightProbes, ScreenSpaceAmbientOcclusion, Shadow,
     SpecializedShadowMaterialPipelineCache, SpecializerKeyContext, ViewKeyCache,
     ViewSpecializationTicks, MATERIAL_BIND_GROUP_INDEX,

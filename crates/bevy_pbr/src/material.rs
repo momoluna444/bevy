@@ -14,7 +14,6 @@ use bevy_core_pipeline::tonemapping::Tonemapping;
 use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::change_detection::Tick;
 use bevy_ecs::system::{ReadOnlySystemParam, SystemChangeTick};
-use bevy_ecs::world;
 use bevy_ecs::{
     prelude::*,
     system::{
@@ -1756,10 +1755,14 @@ pub struct MeshletDeferredFragmentShader;
 pub struct MaterialDrawFunction(pub PassId);
 
 #[derive(DrawFunctionLabel, Debug, Hash, PartialEq, Eq, Clone, Default)]
-pub struct PrepassDrawFunction;
+pub struct PrepassOpaqueDrawFunction;
+#[derive(DrawFunctionLabel, Debug, Hash, PartialEq, Eq, Clone, Default)]
+pub struct PrepassAlphaMaskDrawFunction;
 
 #[derive(DrawFunctionLabel, Debug, Hash, PartialEq, Eq, Clone, Default)]
-pub struct DeferredDrawFunction;
+pub struct DeferredOpaqueDrawFunction;
+#[derive(DrawFunctionLabel, Debug, Hash, PartialEq, Eq, Clone, Default)]
+pub struct DeferredAlphaMaskDrawFunction;
 
 #[derive(DrawFunctionLabel, Debug, Hash, PartialEq, Eq, Clone, Default)]
 pub struct ShadowsDrawFunction;
@@ -2043,10 +2046,6 @@ where
         SRes<DefaultOpaqueRendererMethod>,
         SResMut<MaterialBindGroupAllocators>,
         SResMut<RenderMaterialBindings>,
-        // SRes<DrawFunctions<Opaque3d>>,
-        // SRes<DrawFunctions<AlphaMask3d>>,
-        // SRes<DrawFunctions<Transmissive3d>>,
-        // SRes<DrawFunctions<Transparent3d>>,
         SRes<DrawFunctions<Opaque3dPrepass>>,
         SRes<DrawFunctions<AlphaMask3dPrepass>>,
         SRes<DrawFunctions<Opaque3dDeferred>>,
@@ -2066,10 +2065,6 @@ where
             default_opaque_render_method,
             bind_group_allocators,
             render_material_bindings,
-            // opaque_draw_functions,
-            // alpha_mask_draw_functions,
-            // transmissive_draw_functions,
-            // transparent_draw_functions,
             opaque_prepass_draw_functions,
             alpha_mask_prepass_draw_functions,
             opaque_deferred_draw_functions,
@@ -2082,21 +2077,31 @@ where
     ) -> Result<Self::ErasedAsset, PrepareAssetError<Self::SourceAsset>> {
         let shadows_enabled = M::enable_shadows();
         let prepass_enabled = M::enable_prepass();
-        // let draw_opaque_pbr = opaque_draw_functions.read().id::<DrawMaterial>();
-        // let draw_alpha_mask_pbr = alpha_mask_draw_functions.read().id::<DrawMaterial>();
-        // let draw_transmissive_pbr = transmissive_draw_functions.read().id::<DrawMaterial>();
-        // let draw_transparent_pbr = transparent_draw_functions.read().id::<DrawMaterial>();
-        let draw_opaque_prepass = opaque_prepass_draw_functions.read().get_id::<DrawPrepass>();
+        let draw_opaque_prepass = opaque_prepass_draw_functions.read().id::<DrawPrepass>();
         let draw_alpha_mask_prepass = alpha_mask_prepass_draw_functions
             .read()
-            .get_id::<DrawPrepass>();
+            .id::<DrawPrepass>();
         let draw_opaque_deferred = opaque_deferred_draw_functions
             .read()
-            .get_id::<DrawPrepass>();
+            .id::<DrawPrepass>();
         let draw_alpha_mask_deferred = alpha_mask_deferred_draw_functions
             .read()
-            .get_id::<DrawPrepass>();
-        let shadow_draw_function_id = shadow_draw_functions.read().get_id::<DrawPrepass>();
+            .id::<DrawPrepass>();
+        let draw_shadows = shadow_draw_functions.read().id::<DrawPrepass>();
+
+        let mut draw_functions = SmallVec::from_iter([
+            (PrepassOpaqueDrawFunction.intern(), draw_opaque_prepass),
+            (
+                PrepassAlphaMaskDrawFunction.intern(),
+                draw_alpha_mask_prepass,
+            ),
+            (DeferredOpaqueDrawFunction.intern(), draw_opaque_deferred),
+            (
+                DeferredAlphaMaskDrawFunction.intern(),
+                draw_alpha_mask_deferred,
+            ),
+            (ShadowsDrawFunction.intern(), draw_shadows),
+        ]);
 
         let render_method = match material.opaque_render_method() {
             OpaqueRendererMethod::Forward => OpaqueRendererMethod::Forward,
@@ -2116,42 +2121,41 @@ where
         let render_phase_type =
             alpha_mode_render_phase_type(material.alpha_mode(), reads_view_transmission_texture);
 
-        // let draw_function_id = match render_phase_type {
-        //     RenderPhaseType::Opaque => draw_opaque_pbr,
-        //     RenderPhaseType::AlphaMask => draw_alpha_mask_pbr,
-        //     RenderPhaseType::Transmissive => draw_transmissive_pbr,
-        //     RenderPhaseType::Transparent => draw_transparent_pbr,
+        // let prepass_draw_function_id = match render_phase_type {
+        //     RenderPhaseType::Opaque => draw_opaque_prepass,
+        //     RenderPhaseType::AlphaMask => draw_alpha_mask_prepass,
+        //     _ => None,
         // };
-        let prepass_draw_function_id = match render_phase_type {
-            RenderPhaseType::Opaque => draw_opaque_prepass,
-            RenderPhaseType::AlphaMask => draw_alpha_mask_prepass,
-            _ => None,
-        };
-        let deferred_draw_function_id = match render_phase_type {
-            RenderPhaseType::Opaque => draw_opaque_deferred,
-            RenderPhaseType::AlphaMask => draw_alpha_mask_deferred,
-            _ => None,
-        };
+        // let deferred_draw_function_id = match render_phase_type {
+        //     RenderPhaseType::Opaque => draw_opaque_deferred,
+        //     RenderPhaseType::AlphaMask => draw_alpha_mask_deferred,
+        //     _ => None,
+        // };
 
-        // NOTE: Currently, we use the presence of the draw function to determine whether the pass is enabled.
-        // This can simplify the logic of `specialize_material_meshes` by not relying on specific `xxx_enabled`.
-        // But if any pass bypasses this and adds draw functions manually, this will break.
-        let mut draw_functions = SmallVec::new();
-        if let Some(prepass_draw_function_id) = prepass_draw_function_id
-            && prepass_enabled
-        {
-            draw_functions.push((PrepassDrawFunction.intern(), prepass_draw_function_id));
-        }
-        if let Some(deferred_draw_function_id) = deferred_draw_function_id
-            && render_method == OpaqueRendererMethod::Deferred
-        {
-            draw_functions.push((DeferredDrawFunction.intern(), deferred_draw_function_id));
-        }
-        if let Some(shadow_draw_function_id) = shadow_draw_function_id
-            && shadows_enabled
-        {
-            draw_functions.push((ShadowsDrawFunction.intern(), shadow_draw_function_id));
-        }
+        // NOTE AFTER MERGE: Draw functions are Option<DrawFunctionId> now, we need a new way to
+        // determine whether the pass is enabled
+        
+        // NOTE BEFORE MERGE: Currently, we use the presence of the draw function to determine
+        // whether the pass is enabled. This can simplify the logic of `specialize_material_meshes`
+        // by not relying on specific `xxx_enabled`. But if any pass bypasses this and adds draw 
+        // functions manually, this will break.
+
+        // let mut draw_functions = SmallVec::new();
+        // if let Some(prepass_draw_function_id) = prepass_draw_function_id
+        //     && prepass_enabled
+        // {
+        //     draw_functions.push((PrepassDrawFunction.intern(), prepass_draw_function_id));
+        // }
+        // if let Some(deferred_draw_function_id) = deferred_draw_function_id
+        //     && render_method == OpaqueRendererMethod::Deferred
+        // {
+        //     draw_functions.push((DeferredDrawFunction.intern(), deferred_draw_function_id));
+        // }
+        // if let Some(shadow_draw_function_id) = shadow_draw_function_id
+        //     && shadows_enabled
+        // {
+        //     draw_functions.push((ShadowsDrawFunction.intern(), shadow_draw_function_id));
+        // }
 
         let mut shaders = SmallVec::new();
         let mut add_shader = |label: InternedShaderLabel, shader_ref: ShaderRef| {
@@ -2165,8 +2169,6 @@ where
             }
         };
 
-        // add_shader(MaterialVertexShader.intern(), M::vertex_shader());
-        // add_shader(MaterialFragmentShader.intern(), M::fragment_shader());
         add_shader(PrepassVertexShader.intern(), M::prepass_vertex_shader());
         add_shader(PrepassFragmentShader.intern(), M::prepass_fragment_shader());
         add_shader(DeferredVertexShader.intern(), M::deferred_vertex_shader());
