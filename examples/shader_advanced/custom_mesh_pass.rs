@@ -25,7 +25,6 @@ use bevy::{
         }, renderer::RenderContext, view::{ExtractedView, ViewDepthTexture, ViewTarget}
     },
 };
-use bevy_render::render_phase::SortedPhaseItem;
 
 const SHADER_ASSET_PATH: &str = "shaders/custom_mesh_pass_material.wgsl";
 
@@ -130,6 +129,10 @@ impl MaterialExtension for OutlineExtention {
             ),
         ]);
         pass_shaders
+    }
+
+    fn enabled_passes() -> Vec<bevy::pbr::PassId> {
+        vec![MainPass::id(), OutlinePass::id()]
     }
 
     fn specialize(

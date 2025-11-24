@@ -16,7 +16,10 @@ use bevy_render::{
 };
 use bevy_shader::ShaderRef;
 
-use crate::{DeferredPass, MainPass, Material, MaterialPipeline, MaterialPipelineKey, MeshPass, MeshPipeline, MeshPipelineKey, PassId, PassShaders, Prepass, ShaderSet};
+use crate::{
+    DeferredPass, MainPass, Material, MaterialPipeline, MaterialPipelineKey, MeshPass,
+    MeshPipeline, MeshPipelineKey, PassId, PassShaders, Prepass, ShaderSet,
+};
 
 pub struct MaterialExtensionPipeline {
     pub mesh_pipeline: MeshPipeline,
@@ -44,6 +47,10 @@ pub trait MaterialExtension: Asset + AsBindGroup + Clone + Sized {
             (MainPass::id(), ShaderSet::default()),
         ]);
         pass_shaders
+    }
+
+    fn enabled_passes() -> Vec<PassId> {
+        vec![DeferredPass::id(), Prepass::id(), MainPass::id()]
     }
 
     /// Returns this material's vertex shader. If [`ShaderRef::Default`] is returned, the base material mesh vertex shader
@@ -326,6 +333,10 @@ impl<B: Material, E: MaterialExtension> AsBindGroup for ExtendedMaterial<B, E> {
 impl<B: Material, E: MaterialExtension> Material for ExtendedMaterial<B, E> {
     fn shaders() -> PassShaders {
         E::shaders()
+    }
+
+    fn enabled_passes() -> Vec<PassId> {
+        E::enabled_passes()
     }
 
     fn vertex_shader() -> ShaderRef {

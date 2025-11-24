@@ -148,6 +148,10 @@ pub trait Material: Asset + AsBindGroup + Clone + Sized {
         pass_shaders
     }
 
+    fn enabled_passes() -> Vec<PassId> {
+        vec![Prepass::id(), DeferredPass::id(), MainPass::id()]
+    }
+
     /// Returns this material's vertex shader. If [`ShaderRef::Default`] is returned, the default mesh vertex shader
     /// will be used.
     fn vertex_shader() -> ShaderRef {
@@ -1396,15 +1400,10 @@ pub fn specialize_material_meshes<P: MeshPass>(
             // - Add pass markers to entities so we can filter them here using `visible_entities.iter::<PassMarker<P>>()`.
             // - Add `material.is_pass_enabled(P::id())` for checking whether the material is valid for this pass.
 
-            // if material
-            //     .properties
-            //     .get_draw_function(PhaseDrawFunction(P::id()))
-            //     .is_none()
-            // {
-            //     // Prevent cases where the material was valid previously but switched pass during this frame.
-            //     view_specialized_material_pipeline_cache.remove(visible_entity);
-            //     continue;
-            // }
+            if !material.properties.enabled_passes.contains(&P::id()) {
+                view_specialized_material_pipeline_cache.remove(visible_entity);
+                continue;
+            }
 
             if !valid_render_phase_types.contains(material.properties.render_phase_type) {
                 // Prevent cases where the material was valid previously but switched phase during this frame.
@@ -1760,6 +1759,10 @@ pub fn queue_material_meshes<P: MeshPass>(
                 continue;
             };
 
+            if !material.properties.enabled_passes.contains(&P::id()) {
+                continue;
+            }
+
             // NOTE: Because a single pass could have multiple phases with the same type, and
             // any of them could be added, we avoid using mutual exclusion conditions here.
             let phase_type = material.properties.render_phase_type;
@@ -2050,10 +2053,10 @@ pub struct MaterialProperties {
     /// The key for this material, typically a bitfield of flags that are used to modify
     /// the pipeline descriptor used for this material.
     pub material_key: ErasedMaterialKey,
-    /// Whether shadows are enabled for this material
+
     pub shadows_enabled: bool,
-    /// Whether prepass is enabled for this material
-    pub prepass_enabled: bool,
+    /// Whether the passes are enabled for this material
+    pub enabled_passes: SmallVec<[PassId; 3]>,
 }
 
 impl MaterialProperties {
@@ -2164,7 +2167,8 @@ where
         ): &mut SystemParamItem<Self::Param>,
     ) -> Result<Self::ErasedAsset, PrepareAssetError<Self::SourceAsset>> {
         let shadows_enabled = M::enable_shadows();
-        let prepass_enabled = M::enable_prepass();
+        // let prepass_enabled = M::enable_prepass();
+        let enabled_passes = SmallVec::from_vec(M::enabled_passes());
 
         let draw_shadows = shadow_draw_functions.read().id::<DrawPrepass>();
 
@@ -2371,7 +2375,7 @@ where
                         specialize: Some(specialize::<M>),
                         material_key,
                         shadows_enabled,
-                        prepass_enabled,
+                        enabled_passes,
                     }),
                 })
             }
@@ -2415,7 +2419,7 @@ where
                                 specialize: Some(specialize::<M>),
                                 material_key,
                                 shadows_enabled,
-                                prepass_enabled,
+                                enabled_passes,
                             }),
                         })
                     }
