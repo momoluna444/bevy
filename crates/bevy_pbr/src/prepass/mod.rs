@@ -452,29 +452,6 @@ pub fn prepare_prepass_view_bind_group(
     }
 }
 
-// /// Stores the [`SpecializedPrepassMaterialViewPipelineCache`] for each view.
-// #[derive(Resource, Deref, DerefMut, Default)]
-// pub struct SpecializedPrepassMaterialPipelineCache {
-//     // view_entity -> view pipeline cache
-//     #[deref]
-//     map: HashMap<RetainedViewEntity, SpecializedPrepassMaterialViewPipelineCache>,
-// }
-
-// /// Stores the cached render pipeline ID for each entity in a single view, as
-// /// well as the last time it was changed.
-// #[derive(Deref, DerefMut, Default)]
-// pub struct SpecializedPrepassMaterialViewPipelineCache {
-//     // material entity -> (tick, pipeline_id)
-//     #[deref]
-//     map: MainEntityHashMap<(Tick, CachedRenderPipelineId)>,
-// }
-
-// #[derive(Resource, Deref, DerefMut, Default, Clone)]
-// pub struct ViewKeyPrepassCache(HashMap<RetainedViewEntity, MeshPipelineKey>);
-
-// #[derive(Resource, Deref, DerefMut, Default, Clone)]
-// pub struct ViewPrepassSpecializationTicks(HashMap<RetainedViewEntity, Tick>);
-
 pub fn check_prepass_views_need_specialization<P: MeshPass>(
     mut view_key_cache: ResMut<ViewKeyCache<P>>,
     mut view_specialization_ticks: ResMut<ViewSpecializationTicks<P>>,

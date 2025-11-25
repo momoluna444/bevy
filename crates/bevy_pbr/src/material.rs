@@ -710,14 +710,13 @@ fn extruct_mesh_pass_phase<P, PIE>(
             GpuPreprocessingMode::PreprocessingOnly
         });
 
+        // This is the main 3D camera, so use the first subview index (0).
+        let retained_view_entity = RetainedViewEntity::new(main_entity.into(), None, 0);
         if PIE::ExtractCondition::should_extract(query_item) {
-            // This is the main 3D camera, so use the first subview index (0).
-            let retained_view_entity = RetainedViewEntity::new(main_entity.into(), None, 0);
             view_render_phases.prepare_for_new_frame(retained_view_entity, gpu_preprocessing_mode);
-
             live_entities.insert(retained_view_entity);
         } else {
-            // view_render_phases.remove
+            view_render_phases.remove(&retained_view_entity);
         }
     }
     view_render_phases.retain(&live_entities);
@@ -1390,16 +1389,6 @@ pub fn specialize_material_meshes<P: MeshPass>(
                 continue;
             };
 
-            // Current status:
-            // - We iterate over all entities even if they are not valid for this pass, which wastes performance.
-            // - If an entity's material was valid for this pass previously but becomes invalid in this frame,
-            //   we should remove it from `SpecializedMaterialViewPipelineCache`. However we currently lack a way to
-            //   detect whether a material is valid for this pass.
-            //
-            // Two Solutions:
-            // - Add pass markers to entities so we can filter them here using `visible_entities.iter::<PassMarker<P>>()`.
-            // - Add `material.is_pass_enabled(P::id())` for checking whether the material is valid for this pass.
-
             if !material.properties.enabled_passes.contains(&P::id()) {
                 view_specialized_material_pipeline_cache.remove(visible_entity);
                 continue;
@@ -1573,6 +1562,8 @@ pub trait ViewRenderPhases {
     fn get_mut(&mut self, view_entity: &RetainedViewEntity) -> Option<&mut Self::Phase>;
 
     fn retain(&mut self, view_entities: &HashSet<RetainedViewEntity>);
+
+    fn remove(&mut self, view_entity: &RetainedViewEntity);
 }
 
 impl<BPI> RenderPhase for BinnedRenderPhase<BPI>
@@ -1644,6 +1635,11 @@ where
         self.0
             .retain(|view_entity, _| view_entities.contains(view_entity));
     }
+
+    #[inline]
+    fn remove(&mut self, view_entity: &RetainedViewEntity) {
+        self.0.remove(view_entity);
+    }
 }
 
 impl<SPI> ViewRenderPhases for ViewSortedRenderPhases<SPI>
@@ -1676,6 +1672,11 @@ where
     fn retain(&mut self, view_entities: &HashSet<RetainedViewEntity>) {
         self.0
             .retain(|view_entity, _| view_entities.contains(view_entity));
+    }
+
+    #[inline]
+    fn remove(&mut self, view_entity: &RetainedViewEntity) {
+        self.0.remove(view_entity);
     }
 }
 
@@ -2047,13 +2048,12 @@ pub struct MaterialProperties {
             &mut RenderPipelineDescriptor,
             &MeshVertexBufferLayoutRef,
             ErasedMaterialPipelineKey,
-            // PassId,
         ) -> Result<(), SpecializedMeshPipelineError>,
     >,
     /// The key for this material, typically a bitfield of flags that are used to modify
     /// the pipeline descriptor used for this material.
     pub material_key: ErasedMaterialKey,
-
+    /// Whether shadows are enabled for this material
     pub shadows_enabled: bool,
     /// Whether the passes are enabled for this material
     pub enabled_passes: SmallVec<[PassId; 3]>,
