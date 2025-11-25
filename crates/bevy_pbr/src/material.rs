@@ -402,30 +402,10 @@ impl<P: MeshPass> Plugin for MeshPassPlugin<P> {
         // For all instances of PassPlugin
         render_app
             .init_resource::<EntitySpecializationTicks>()
-            .init_resource::<SpecializedMaterialPipelineCache<P>>()
-            .init_resource::<MeshPassSpecializedMeshPipelines<P, P::Specializer>>()
             .init_resource::<ViewKeyCache<P>>() // Double check
             .init_resource::<ViewSpecializationTicks<P>>() // Double check
             .init_resource::<RenderMaterialInstances>()
-            .init_resource::<MaterialBindGroupAllocators>()
-            .init_resource::<EntitiesNeedingSweep>()
-            .add_systems(
-                ExtractSchedule,
-                late_sweep_entities_needing_specialization::<P>
-                    .after(MaterialEarlySweepEntitiesNeedingSpecializationSystems)
-                    .before(late_sweep_material_instances),
-            )
-            .add_systems(
-                Render,
-                (
-                    specialize_material_meshes::<P>
-                        .in_set(RenderSystems::PrepareMeshes)
-                        .after(prepare_assets::<RenderMesh>)
-                        .after(collect_meshes_for_gpu_building)
-                        .after(set_mesh_motion_vector_flags),
-                    queue_material_meshes::<P>.in_set(RenderSystems::QueueMeshes),
-                ),
-            );
+            .init_resource::<MaterialBindGroupAllocators>();
 
         // Fake singleton start
         if render_app
@@ -489,22 +469,24 @@ where
     <P::RenderCommand as RenderCommand<PIE>>::Param: ReadOnlySystemParam,
 {
     fn build(&self, app: &mut App) {
-        // NOTE: The resource `PIE::RenderPhases` is indirectly initialized `by PIE::PhasePlugin`.
-        if !app.is_plugin_added::<PIEPlugin<PIE>>() {
-            app.add_plugins(PIEPlugin::<PIE>::new(self.debug_flags));
-        } else {
+        if app.is_plugin_added::<PIEPlugin<PIE>>() {
             panic!(
                 "Duplicate PhaseItem {} found in {}. Consider defining a newtype.",
                 core::any::type_name::<PIE>(),
                 core::any::type_name::<P>(),
             );
         }
+        // NOTE: The resource `ViewXXXRenderPhases<PI>` is indirectly initialized `by PIE::PhaseFamily::Plugin`.
+        app.add_plugins(PIEPlugin::<PIE>::new(self.debug_flags));
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
 
         render_app
+            .init_resource::<SpecializedMaterialPipelineCache<PIE>>()
+            .init_resource::<MeshPassSpecializedMeshPipelines<PIE, P::Specializer>>()
+            .init_resource::<EntitiesNeedingSweep>()
             .init_resource::<PassPhaseDrawFunctions>()
             .init_resource::<DrawFunctions<PIE>>()
             .add_render_command::<PIE, P::RenderCommand>()
@@ -512,7 +494,26 @@ where
                 RenderStartup,
                 insert_pass_phase_draw_functions::<P, PIE>.with_input(self.phase_index),
             )
-            .add_systems(ExtractSchedule, extruct_mesh_pass_phase::<P, PIE>);
+            .add_systems(
+                ExtractSchedule,
+                (
+                    extruct_mesh_pass_phase::<P, PIE>,
+                    late_sweep_entities_needing_specialization::<P, PIE>
+                        .after(MaterialEarlySweepEntitiesNeedingSpecializationSystems)
+                        .before(late_sweep_material_instances),
+                ),
+            )
+            .add_systems(
+                Render,
+                (
+                    specialize_material_meshes::<P, PIE>
+                        .in_set(RenderSystems::PrepareMeshes)
+                        .after(prepare_assets::<RenderMesh>)
+                        .after(collect_meshes_for_gpu_building)
+                        .after(set_mesh_motion_vector_flags),
+                    queue_material_meshes::<P, PIE>.in_set(RenderSystems::QueueMeshes),
+                ),
+            );
     }
 }
 
@@ -1112,10 +1113,10 @@ pub struct EntitiesNeedingSweep {
 /// This runs after all invocations of `early_sweep_entities_needing_specialization`.
 /// Because `early_sweep_entities_needing_specialization` is a per-material system and
 /// the `SpecializedMaterialPipelineCache` is per-pass, we have to sweep this way.
-pub fn late_sweep_entities_needing_specialization<P: MeshPass>(
+pub fn late_sweep_entities_needing_specialization<P: MeshPass, PIE: PhaseItemExt>(
     views: Query<&ExtractedView, With<P>>,
     mut entities_needing_sweep: ResMut<EntitiesNeedingSweep>,
-    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P>>,
+    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<PIE>>,
 ) {
     let Some(entities) = entities_needing_sweep.get_mut(&P::id()) else {
         return;
@@ -1204,14 +1205,14 @@ pub struct EntitySpecializationTickPair {
 
 /// Stores the [`SpecializedMaterialViewPipelineCache`] for each view.
 #[derive(Resource, Deref, DerefMut)]
-pub struct SpecializedMaterialPipelineCache<P> {
+pub struct SpecializedMaterialPipelineCache<PIE: PhaseItemExt> {
     // view entity -> view pipeline cache
     #[deref]
     map: HashMap<RetainedViewEntity, SpecializedMaterialViewPipelineCache>,
-    _marker: PhantomData<P>,
+    _marker: PhantomData<PIE>,
 }
 
-impl<P> Default for SpecializedMaterialPipelineCache<P> {
+impl<PIE: PhaseItemExt> Default for SpecializedMaterialPipelineCache<PIE> {
     fn default() -> Self {
         Self {
             map: Default::default(),
@@ -1289,18 +1290,13 @@ pub struct ViewKeyCache<P>(
 pub struct ViewSpecializationTicks<P>(#[deref] HashMap<RetainedViewEntity, Tick>, PhantomData<P>);
 
 #[derive(Resource, Deref, DerefMut, FromWorld)]
-pub struct MeshPassSpecializedMeshPipelines<P, S: SpecializedMeshPipeline>(
+pub struct MeshPassSpecializedMeshPipelines<PIE: PhaseItemExt, S: SpecializedMeshPipeline>(
     #[deref] SpecializedMeshPipelines<S>,
-    PhantomData<P>,
+    PhantomData<PIE>,
 );
 
-pub fn specialize_material_meshes<P: MeshPass>(
-    (view_render_phases_1, view_render_phases_2, view_render_phases_3, view_render_phases_4): (
-        Option<Res<Phases1<P>>>,
-        Option<Res<Phases2<P>>>,
-        Option<Res<Phases3<P>>>,
-        Option<Res<Phases4<P>>>,
-    ),
+pub fn specialize_material_meshes<P: MeshPass, PIE: PhaseItemExt>(
+    view_render_phases: Res<PIEPhases<PIE>>,
     render_meshes: Res<RenderAssets<RenderMesh>>,
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_mesh_instances: Res<RenderMeshInstances>,
@@ -1311,8 +1307,8 @@ pub fn specialize_material_meshes<P: MeshPass>(
     view_key_cache: Res<ViewKeyCache<P::ViewKeySource>>,
     entity_specialization_ticks: Res<EntitySpecializationTicks>,
     view_specialization_ticks: Res<ViewSpecializationTicks<P::ViewKeySource>>,
-    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P>>,
-    mut pipelines: ResMut<MeshPassSpecializedMeshPipelines<P, P::Specializer>>,
+    mut specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<PIE>>,
+    mut pipelines: ResMut<MeshPassSpecializedMeshPipelines<PIE, P::Specializer>>,
     pipeline: Res<<P::Specializer as PipelineSpecializer>::Pipeline>,
     pipeline_cache: Res<PipelineCache>,
     ticks: SystemChangeTick,
@@ -1321,30 +1317,10 @@ pub fn specialize_material_meshes<P: MeshPass>(
     // pipeline IDs.
     let mut all_views: HashSet<RetainedViewEntity, FixedHasher> = HashSet::default();
 
-    // All the valid render phase types this pass supports, Dummy phase types are none.
-    let valid_render_phase_types = PIE1::<P>::PHASE_TYPES
-        | PIE2::<P>::PHASE_TYPES
-        | PIE3::<P>::PHASE_TYPES
-        | PIE4::<P>::PHASE_TYPES;
-
     for (view, visible_entities) in &views {
         all_views.insert(view.retained_view_entity);
 
-        // TODO: Move this part to a separate system
-        let mut all_invalid = true;
-        if let Some(view_render_phases_1) = view_render_phases_1.as_ref() {
-            all_invalid &= !view_render_phases_1.contains_key(&view.retained_view_entity);
-        }
-        if let Some(view_render_phases_2) = view_render_phases_2.as_ref() {
-            all_invalid &= !view_render_phases_2.contains_key(&view.retained_view_entity);
-        }
-        if let Some(view_render_phases_3) = view_render_phases_3.as_ref() {
-            all_invalid &= !view_render_phases_3.contains_key(&view.retained_view_entity);
-        }
-        if let Some(view_render_phases_4) = view_render_phases_4.as_ref() {
-            all_invalid &= !view_render_phases_4.contains_key(&view.retained_view_entity);
-        }
-        if all_invalid {
+        if !view_render_phases.contains_key(&view.retained_view_entity) {
             continue;
         }
 
@@ -1390,13 +1366,13 @@ pub fn specialize_material_meshes<P: MeshPass>(
             };
 
             if !material.properties.enabled_passes.contains(&P::id()) {
+                // Prevent cases where the material was valid previously but switched pass during this frame.
                 view_specialized_material_pipeline_cache.remove(visible_entity);
                 continue;
             }
 
-            if !valid_render_phase_types.contains(material.properties.render_phase_type) {
+            if !PIE::PHASE_TYPES.contains(material.properties.render_phase_type) {
                 // Prevent cases where the material was valid previously but switched phase during this frame.
-                view_specialized_material_pipeline_cache.remove(visible_entity);
                 continue;
             }
 
@@ -1682,36 +1658,20 @@ where
 
 /// For each view, iterates over all the meshes visible from that view and adds
 /// them to [`BinnedRenderPhase`]s or [`SortedRenderPhase`]s as appropriate.
-pub fn queue_material_meshes<P: MeshPass>(
-    mut view_render_phases_1: Option<ResMut<Phases1<P>>>,
-    mut view_render_phases_2: Option<ResMut<Phases2<P>>>,
-    mut view_render_phases_3: Option<ResMut<Phases3<P>>>,
-    mut view_render_phases_4: Option<ResMut<Phases4<P>>>,
+pub fn queue_material_meshes<P: MeshPass, PIE: PhaseItemExt>(
+    mut view_render_phases: ResMut<PIEPhases<PIE>>,
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_mesh_instances: Res<RenderMeshInstances>,
     render_material_instances: Res<RenderMaterialInstances>,
     mesh_allocator: Res<MeshAllocator>,
     gpu_preprocessing_support: Res<GpuPreprocessingSupport>,
     views: Query<(&ExtractedView, &RenderVisibleEntities), With<P>>,
-    specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<P>>,
+    specialized_material_pipeline_cache: ResMut<SpecializedMaterialPipelineCache<PIE>>,
 ) {
     for (view, visible_entities) in &views {
-        let mut phase1: Option<&mut Phase1<P>> = view_render_phases_1
-            .as_mut()
-            .and_then(|view_render_phases| view_render_phases.get_mut(&view.retained_view_entity));
-        let mut phase2: Option<&mut Phase2<P>> = view_render_phases_2
-            .as_mut()
-            .and_then(|view_render_phases| view_render_phases.get_mut(&view.retained_view_entity));
-        let mut phase3: Option<&mut Phase3<P>> = view_render_phases_3
-            .as_mut()
-            .and_then(|view_render_phases| view_render_phases.get_mut(&view.retained_view_entity));
-        let mut phase4: Option<&mut Phase4<P>> = view_render_phases_4
-            .as_mut()
-            .and_then(|view_render_phases| view_render_phases.get_mut(&view.retained_view_entity));
-
-        if phase1.is_none() && phase2.is_none() && phase3.is_none() && phase4.is_none() {
+        let Some(render_phase) = view_render_phases.get_mut(&view.retained_view_entity) else {
             continue;
-        }
+        };
 
         let Some(view_specialized_material_pipeline_cache) =
             specialized_material_pipeline_cache.get(&view.retained_view_entity)
@@ -1731,20 +1691,7 @@ pub fn queue_material_meshes<P: MeshPass>(
 
             // Skip the entity if it's cached in a bin and up to date.
             // NOTE: SortedRenderPhase will always return false.
-            let mut any_cached = false;
-            if let Some(phase1) = phase1.as_mut() {
-                any_cached |= phase1.validate_cached_entity(*visible_entity, current_change_tick);
-            }
-            if let Some(phase2) = phase2.as_mut() {
-                any_cached |= phase2.validate_cached_entity(*visible_entity, current_change_tick);
-            }
-            if let Some(phase3) = phase3.as_mut() {
-                any_cached |= phase3.validate_cached_entity(*visible_entity, current_change_tick);
-            }
-            if let Some(phase4) = phase4.as_mut() {
-                any_cached |= phase4.validate_cached_entity(*visible_entity, current_change_tick);
-            }
-            if any_cached {
+            if render_phase.validate_cached_entity(*visible_entity, current_change_tick) {
                 continue;
             }
 
@@ -1764,89 +1711,30 @@ pub fn queue_material_meshes<P: MeshPass>(
                 continue;
             }
 
-            // NOTE: Because a single pass could have multiple phases with the same type, and
-            // any of them could be added, we avoid using mutual exclusion conditions here.
-            let phase_type = material.properties.render_phase_type;
-            if PIE1::<P>::PHASE_TYPES.contains(phase_type)
-                && let Some(phase1) = phase1.as_mut()
-                && let Some(draw_function) = material
-                    .properties
-                    .get_draw_function(Phase1DrawFunction(P::id()))
-            {
-                let context = PhaseContext {
-                    mesh_instance: &mesh_instance,
-                    material,
-                    mesh_allocator: &mesh_allocator,
-                    entity: *render_entity,
-                    main_entity: *visible_entity,
-                    draw_function,
-                    pipeline_id,
-                    current_change_tick,
-                    gpu_preprocessing_support: *gpu_preprocessing_support,
-                    rangefinder: &rangefinder,
-                };
-                phase1.add(&context);
+            if !PIE::PHASE_TYPES.contains(material.properties.render_phase_type) {
+                continue;
             }
-            if PIE2::<P>::PHASE_TYPES.contains(phase_type)
-                && let Some(phase2) = phase2.as_mut()
-                && let Some(draw_function) = material
-                    .properties
-                    .get_draw_function(Phase2DrawFunction(P::id()))
-            {
-                let context = PhaseContext {
-                    mesh_instance: &mesh_instance,
-                    material,
-                    mesh_allocator: &mesh_allocator,
-                    entity: *render_entity,
-                    main_entity: *visible_entity,
-                    draw_function,
-                    pipeline_id,
-                    current_change_tick,
-                    gpu_preprocessing_support: *gpu_preprocessing_support,
-                    rangefinder: &rangefinder,
-                };
-                phase2.add(&context);
-            }
-            if PIE3::<P>::PHASE_TYPES.contains(phase_type)
-                && let Some(phase3) = phase3.as_mut()
-                && let Some(draw_function) = material
-                    .properties
-                    .get_draw_function(Phase3DrawFunction(P::id()))
-            {
-                let context = PhaseContext {
-                    mesh_instance: &mesh_instance,
-                    material,
-                    mesh_allocator: &mesh_allocator,
-                    entity: *render_entity,
-                    main_entity: *visible_entity,
-                    draw_function,
-                    pipeline_id,
-                    current_change_tick,
-                    gpu_preprocessing_support: *gpu_preprocessing_support,
-                    rangefinder: &rangefinder,
-                };
-                phase3.add(&context);
-            }
-            if PIE4::<P>::PHASE_TYPES.contains(phase_type)
-                && let Some(phase4) = phase4.as_mut()
-                && let Some(draw_function) = material
-                    .properties
-                    .get_draw_function(Phase4DrawFunction(P::id()))
-            {
-                let context = PhaseContext {
-                    mesh_instance: &mesh_instance,
-                    material,
-                    mesh_allocator: &mesh_allocator,
-                    entity: *render_entity,
-                    main_entity: *visible_entity,
-                    draw_function,
-                    pipeline_id,
-                    current_change_tick,
-                    gpu_preprocessing_support: *gpu_preprocessing_support,
-                    rangefinder: &rangefinder,
-                };
-                phase4.add(&context);
+
+            let Some(draw_function) = material
+                .properties
+                .get_draw_function(Phase1DrawFunction(P::id()))
+            else {
+                continue;
             };
+
+            let context = PhaseContext {
+                mesh_instance: &mesh_instance,
+                material,
+                mesh_allocator: &mesh_allocator,
+                entity: *render_entity,
+                main_entity: *visible_entity,
+                draw_function,
+                pipeline_id,
+                current_change_tick,
+                gpu_preprocessing_support: *gpu_preprocessing_support,
+                rangefinder: &rangefinder,
+            };
+            render_phase.add(&context);
         }
     }
 }

@@ -11,6 +11,7 @@ use bevy_camera::visibility::{
 use bevy_camera::Camera3d;
 use bevy_color::ColorToComponents;
 use bevy_core_pipeline::core_3d::CORE_3D_DEPTH_FORMAT;
+use bevy_core_pipeline::prepass::Opaque3dPrepass;
 use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::change_detection::Tick;
 use bevy_ecs::system::SystemChangeTick;
@@ -1765,7 +1766,7 @@ pub fn specialize_shadows(
         Res<RenderMaterialInstances>,
     ),
     shadow_render_phases: Res<ViewBinnedRenderPhases<Shadow>>,
-    mut pipelines: ResMut<MeshPassSpecializedMeshPipelines<Prepass, PrepassPipelineSpecializer>>,
+    mut pipelines: ResMut<MeshPassSpecializedMeshPipelines<Opaque3dPrepass, PrepassPipelineSpecializer>>,
     pipeline_cache: Res<PipelineCache>,
     render_lightmaps: Res<RenderLightmaps>,
     view_lights: Query<(Entity, &ViewLightEntities), With<ExtractedView>>,

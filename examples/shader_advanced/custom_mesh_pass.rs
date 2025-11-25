@@ -5,7 +5,7 @@
 use bevy::{
     camera::{MainPassResolutionOverride, Viewport},
     core_pipeline::core_3d::{
-        Opaque3d, Opaque3dBatchSetKey, Opaque3dBinKey, Transparent3d, graph::{Core3d, Node3d}
+        Opaque3d, Opaque3dBatchSetKey, Opaque3dBinKey, graph::{Core3d, Node3d}
     },
     ecs::query::QueryItem,
     mesh::MeshVertexBufferLayoutRef,
